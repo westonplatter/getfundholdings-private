@@ -7,6 +7,7 @@ from urllib.parse import urljoin, urlencode
 import random
 import json
 import os
+import re
 
 class SECHTTPClient:
     """
@@ -617,18 +618,23 @@ class SECHTTPClient:
                         
                         # Look for rows that contain the filing type
                         if any(filing_type in text for text in cell_texts):
-                            # Extract accession number from links
+                            # Extract accession number from both links and raw text
                             links = row.find_all('a', href=True)
                             accession_number = None
                             
-                            for link in links:
-                                href = link.get('href', '')
-                                if 'Archives/edgar/data' in href:
-                                    # Extract accession number from URL
-                                    parts = href.split('/')
-                                    if len(parts) > 4:
-                                        accession_number = parts[4]
-                                        break
+                            # First try to extract from raw text (more reliable)
+                            accession_number = self._extract_accession_number(cell_texts)
+                            
+                            # If no accession number from raw text, try to extract from EDGAR links
+                            if not accession_number:
+                                for link in links:
+                                    href = link.get('href', '')
+                                    if 'Archives/edgar/data' in href:
+                                        # Extract accession number from URL
+                                        parts = href.split('/')
+                                        if len(parts) > 4:
+                                            accession_number = parts[4]
+                                            break
                             
                             # Extract filing information
                             filing_info = {
@@ -759,6 +765,36 @@ class SECHTTPClient:
         except Exception as e:
             self.logger.error(f"Failed to load series data: {e}")
             return {}
+        
+    def load_series_filings(self, cik: str, series_id: str, filing_type: str = "NPORT-P") -> Dict:
+        """
+        Load series filings data from previously saved JSON file.
+        
+        Args:
+            cik: Company CIK number
+            series_id: Series ID
+            filing_type: Type of filing to fetch (default: NPORT-P)
+            
+        Returns:
+            Dictionary containing series filings data
+        """
+        filename = f"series_filings_{cik}_{series_id}_{filing_type.lower()}.json"
+        data_dir = "data"
+
+        filepath = os.path.join(data_dir, filename)
+
+        try:
+            with open(filepath, 'r') as f:
+                data = json.load(f)
+
+
+            self.logger.info(f"Loaded series filings from {filepath}")
+            return data
+
+        except FileNotFoundError:
+            self.logger.warning(f"Series filings file not found: {filepath}")
+            return {}
+
     
     def extract_series_ids(self, series_data: Dict) -> List[str]:
         """
@@ -841,3 +877,164 @@ class SECHTTPClient:
         
         self.logger.info(f"Completed processing {len(saved_files)} series for CIK {cik}")
         return saved_files
+    
+    def _extract_accession_number(self, cell_texts: List[str]) -> Optional[str]:
+        """
+        Extract accession number from cell text using regex patterns.
+        
+        Args:
+            cell_texts: List of cell text content
+            
+        Returns:
+            Extracted accession number or None
+        """
+        # Pattern to match accession numbers in text like "Acc-no: 0001752724-25-119791"
+        accession_pattern = r'Acc-no:\s*(\d{10}-\d{2}-\d{6})'
+        
+        for text in cell_texts:
+            if text:  # Make sure text is not None or empty
+                match = re.search(accession_pattern, text)
+                if match:
+                    accession_number = match.group(1)
+                    self.logger.debug(f"Extracted accession number: {accession_number} from text: {text}")
+                    return accession_number
+        
+        # If no match found, log for debugging
+        self.logger.debug(f"No accession number found in cell texts: {cell_texts}")
+        return None
+    
+    def build_nport_url(self, cik: str, accession_number: str) -> str:
+        """
+        Build N-PORT XML download URL from CIK and accession number.
+        
+        Args:
+            cik: Company CIK number (e.g., "1100663")
+            accession_number: e.g., "0001752724-25-119791"
+        
+        Returns:
+            Complete URL to N-PORT XML file
+        """
+        # Format CIK (remove leading zeros but keep at least one digit)
+        formatted_cik = str(cik).lstrip('0') or '0'
+        
+        # Remove dashes for directory name
+        directory = accession_number.replace('-', '')
+        
+        # Build URL
+        url = f"https://www.sec.gov/Archives/edgar/data/{formatted_cik}/{directory}/primary_doc.xml"
+        
+        return url
+    
+    def download_nport_xml(self, cik: str, accession_number: str) -> Optional[str]:
+        """
+        Download N-PORT XML file from SEC EDGAR.
+        
+        Args:
+            cik: Company CIK number (e.g., "1100663")
+            accession_number: e.g., "0001752724-25-119791"
+            
+        Returns:
+            XML content as string or None if failed
+        """
+        url = self.build_nport_url(cik, accession_number)
+        
+        try:
+            # Update headers for XML content
+            original_accept = self.headers.get('Accept')
+            self.headers['Accept'] = 'application/xml, text/xml, */*'
+            self.session.headers.update(self.headers)
+            
+            response = self._make_request(url)
+            
+            if response.status_code == 404:
+                self.logger.warning(f"N-PORT XML not found for accession {accession_number}")
+                return None
+            
+            # Restore original headers
+            self.headers['Accept'] = original_accept
+            self.session.headers.update(self.headers)
+            
+            self.logger.info(f"Downloaded N-PORT XML for accession {accession_number} ({len(response.text)} bytes)")
+            return response.text
+            
+        except requests.RequestException as e:
+            self.logger.error(f"Failed to download N-PORT XML for {accession_number}: {e}")
+            return None
+    
+    def save_nport_xml(self, xml_content: str, accession_number: str, cik: str, series_id: str, filename: Optional[str] = None) -> str:
+        """
+        Save N-PORT XML content to file.
+        
+        Args:
+            xml_content: XML content string
+            accession_number: Accession number for naming
+            cik: CIK number for filename
+            series_id: Series ID for filename
+            filename: Optional filename, defaults to structured name with CIK and series
+            
+        Returns:
+            Path to saved file
+        """
+        if filename is None:
+            # Clean accession number for filename (replace dashes with underscores)
+            clean_accession = accession_number.replace('-', '_')
+            filename = f"nport_{cik}_{series_id}_{clean_accession}.xml"
+        
+        # Create data directory if it doesn't exist
+        data_dir = "data"
+        if not os.path.exists(data_dir):
+            os.makedirs(data_dir)
+        
+        filepath = os.path.join(data_dir, filename)
+        
+        try:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(xml_content)
+            
+            self.logger.info(f"N-PORT XML saved to {filepath}")
+            return filepath
+            
+        except Exception as e:
+            self.logger.error(f"Failed to save N-PORT XML: {e}")
+            raise
+    
+    def build_nport_index_url(self, cik: str, accession_number: str) -> str:
+        """
+        Build N-PORT index page URL from CIK and accession number.
+        
+        Args:
+            cik: Company CIK number (e.g., "1100663")
+            accession_number: e.g., "0001752724-25-119791"
+        
+        Returns:
+            Complete URL to N-PORT index page
+        """
+        # Format CIK (remove leading zeros but keep at least one digit)
+        formatted_cik = str(cik).lstrip('0') or '0'
+        
+        # Remove dashes for directory name
+        directory = accession_number.replace('-', '')
+        
+        # Build URL
+        url = f"https://www.sec.gov/Archives/edgar/data/{formatted_cik}/{directory}/{accession_number}-index.htm"
+        
+        return url
+    
+    def download_and_save_nport(self, cik: str, accession_number: str, series_id: str) -> Optional[str]:
+        """
+        Download and save N-PORT XML file.
+        
+        Args:
+            cik: Company CIK number (e.g., "1100663")
+            accession_number: e.g., "0001752724-25-119791"
+            series_id: Series ID (e.g., "S000004310")
+        
+        Returns:
+            Path to saved file or None if failed
+        """
+        xml_content = self.download_nport_xml(cik, accession_number)
+        
+        if xml_content:
+            return self.save_nport_xml(xml_content, accession_number, cik, series_id)
+        
+        return None
