@@ -9,6 +9,7 @@ CIK_MAP = {
 }
 
 def download_series_data(client, cik):
+    """Fetch and save series data for a given CIK"""
     series_data = client.fetch_series_data(cik)
     saved_file = client.save_series_data(series_data, cik)
     logger.debug(f"Series data saved to: {saved_file}")
@@ -26,6 +27,7 @@ def download_series_data(client, cik):
 
 
 def download_all_series_data(client):
+    """Iterate through CIK_MAP and download series data for all funds"""
     for fund_issuer_key, cik in CIK_MAP.items():
         logger.debug(f"Downloading series data for {fund_issuer_key} (CIK: {cik})")
         _series_data, _saved_file = download_series_data(client, cik)
@@ -131,6 +133,17 @@ def download_nport_filings_for_series():
         logger.info(f"  - {file_info['accession']} ({file_info['filing_date']}) -> {file_info['file_path']}")
     
     return downloaded_files
+
+
+def download_nport_filings_for_series_by_cik(cik):
+    """Download N-PORT XML files for all filings of a specific series."""
+    client = SECHTTPClient()
+    
+    # Test parameters from your existing data
+    test_cik = "1100663"
+    test_series_id = "S000004310"
+    
+    logger.info(f"Loading series filings for CIK: {test_cik}, Series: {test_series_id}")
 
 
 def main():
