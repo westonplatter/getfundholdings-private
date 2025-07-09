@@ -96,7 +96,11 @@ class OpenFIGIClient:
                 self._rate_limit()
                 
                 # Log request for debugging
-                logger.debug(f"Making request to {url} (attempt {attempt + 1})")
+                # logger.debug(f"Making request to {url} (attempt {attempt + 1})")
+                if attempt == 0:
+                    logger.info(f"Making request to {url}")
+                else:
+                    logger.debug(f"Making request to {url} (attempt {attempt + 1})")
                 
                 response = self.session.post(url, json=data, timeout=30)
                 
@@ -172,8 +176,8 @@ class OpenFIGIClient:
         Returns:
             Ticker symbol if found, None otherwise
         """
-        if not cusip or len(cusip) != 9:
-            logger.warning(f"Invalid CUSIP format: {cusip}")
+        if not cusip or not isinstance(cusip, str) or len(cusip) != 9:
+            logger.warning(f"Invalid CUSIP format: {cusip} (type: {type(cusip)})")
             return None
         
         # Check cache first
@@ -270,8 +274,10 @@ class OpenFIGIClient:
         
         logger.info(f"Adding ticker symbols for {len(df)} holdings...")
         
-        # Get unique CUSIPs to avoid duplicate API calls
-        unique_cusips = df[cusip_column].unique()
+        # Get unique CUSIPs to avoid duplicate API calls, filtering out NaN values
+        unique_cusips = df[cusip_column].dropna().unique()
+        # Filter out non-string values that might be floats
+        unique_cusips = [cusip for cusip in unique_cusips if isinstance(cusip, str)]
         logger.info(f"Found {len(unique_cusips)} unique CUSIPs")
         
         # Get ticker mappings for unique CUSIPs
@@ -284,6 +290,12 @@ class OpenFIGIClient:
         found_tickers = df['ticker'].notna().sum()
         success_rate = found_tickers / len(df) * 100
         logger.info(f"Found tickers for {found_tickers}/{len(df)} holdings ({success_rate:.1f}%)")
+        
+        # Log CUSIPs that couldn't be found
+        missing_tickers = df[df['ticker'].isna()]
+        if not missing_tickers.empty:
+            unique_missing_cusips = missing_tickers[cusip_column].dropna().unique()
+            logger.warning(f"Could not find tickers for {len(unique_missing_cusips)} CUSIPs: {list(unique_missing_cusips)}")
         
         return df
     
@@ -351,13 +363,13 @@ def main():
     # xml_file = "/Users/weston/clients/westonplatter/getfundholdings-private/data/nport_1100663_S000004310_0001752724_25_043800.xml"
     
     if not os.path.exists(xml_file):
-        print(f"XML file not found: {xml_file}")
+        logger.error(f"XML file not found: {xml_file}")
         return
     
     holdings_df, fund_info = parse_nport_file(xml_file)
     
     if holdings_df.empty:
-        print("No holdings found in N-PORT file")
+        logger.error("No holdings found in N-PORT file")
         return
     
     # Initialize OpenFIGI client
@@ -371,27 +383,27 @@ def main():
     top_holdings = holdings_df.nlargest(2000, 'value_usd').copy()
     
     # Add ticker symbols
-    print("Adding ticker symbols to top holdings...")
+    logger.info("Adding ticker symbols to top holdings...")
     top_holdings_with_tickers = client.add_tickers_to_dataframe(top_holdings)
     
     # Display results
-    print(f"\nTop 20 Holdings with Tickers:")
-    print("-" * 80)
+    logger.info(f"\nTop 20 Holdings with Tickers:")
+    logger.info("-" * 80)
     for _, row in top_holdings_with_tickers.iterrows():
         value_billions = row['value_usd'] / 1e9
-        print(f"{row['name']:<35} {row['ticker'] or 'N/A':<6} ${value_billions:>7.2f}B ({row['percent_value']:.2%})")
+        logger.info(f"{row['name']:<35} {row['ticker'] or 'N/A':<6} ${value_billions:>7.2f}B ({row['percent_value']:.2%})")
     
     # Display cache statistics
     stats = client.get_cache_stats()
-    print(f"\nCache Statistics:")
-    print(f"Total cached: {stats['total_cached']}")
-    print(f"Found: {stats['found_cached']}")
-    print(f"Not found: {stats['not_found_cached']}")
+    logger.info(f"\nCache Statistics:")
+    logger.info(f"Total cached: {stats['total_cached']}")
+    logger.info(f"Found: {stats['found_cached']}")
+    logger.info(f"Not found: {stats['not_found_cached']}")
     
     # Save results
     output_file = "top_holdings_with_tickers.csv"
-    top_holdings_with_tickers.to_csv(output_file, index=False)
-    print(f"\nSaved to {output_file}")
+    top_holdings_with_tickers.to_csv(output_file, index=False, quoting=1)
+    logger.info(f"\nSaved to {output_file}")
 
 
 if __name__ == "__main__":

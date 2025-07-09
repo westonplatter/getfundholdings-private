@@ -10,6 +10,7 @@ import xml.etree.ElementTree as ET
 import pandas as pd
 from typing import Dict, List, Any, Optional
 import os
+from loguru import logger
 
 
 class NPortParser:
@@ -173,6 +174,33 @@ class NPortParser:
         
         # Convert holdings to DataFrame
         holdings_df = pd.DataFrame(holdings_data)
+        
+        # Check for missing CUSIPs and log warnings
+        if not holdings_df.empty:
+            missing_cusip_mask = (holdings_df['cusip'].isna()) | (holdings_df['cusip'] == '') | (holdings_df['cusip'] == 'N/A')
+            missing_count = missing_cusip_mask.sum()
+            total_count = len(holdings_df)
+            
+            if missing_count > 0:
+                logger.warning(f"Found {missing_count}/{total_count} holdings ({missing_count/total_count*100:.1f}%) with missing CUSIPs")
+                
+                # Log details about holdings with missing CUSIPs
+                missing_holdings = holdings_df[missing_cusip_mask]
+                logger.warning(f"Holdings missing CUSIPs:")
+                for idx, row in missing_holdings.iterrows():
+                    # Show name, value, and alternative identifiers
+                    name = row.get('name', 'Unknown')[:50]  # Truncate long names
+                    value = row.get('value_usd', 0)
+                    # Convert value to float for formatting, handle potential string values
+                    try:
+                        value_num = float(value) if value else 0
+                        value_str = f"${value_num:,.0f}"
+                    except (ValueError, TypeError):
+                        value_str = f"${str(value)}"
+                    
+                    isin = row.get('isin', '')
+                    other_id = row.get('other_id', '')
+                    logger.warning(f"  - {name} ({value_str}) - ISIN: {isin}, Other: {other_id}")
         
         # Convert numeric columns
         numeric_columns = ['balance', 'value_usd', 'percent_value', 'loan_value']

@@ -1,13 +1,13 @@
 import time
 import requests
 from bs4 import BeautifulSoup
-import logging
 from typing import Dict, List, Optional
 from urllib.parse import urljoin, urlencode
 import random
 import json
 import os
 import re
+from loguru import logger
 
 class SECHTTPClient:
     """
@@ -36,8 +36,8 @@ class SECHTTPClient:
         self.session.headers.update(self.headers)
         
         # Setup logging for compliance
-        logging.basicConfig(level=logging.INFO)
-        self.logger = logging.getLogger(__name__)
+        # logging.basicConfig(level=logging.INFO)
+        # logger = logging.getLogger(__name__)
     
     def _rate_limit(self):
         """Enforce rate limiting: maximum 10 requests per second."""
@@ -73,7 +73,11 @@ class SECHTTPClient:
                 self._rate_limit()
                 
                 # Log request for compliance
-                self.logger.info(f"Making request to {url} (attempt {attempt + 1})")
+                # logger.info(f"Making request to {url} (attempt {attempt + 1})")
+                if attempt == 0:
+                    logger.info(f"Making request to {url}")
+                else:
+                    logger.debug(f"Making request to {url} (attempt {attempt + 1})")
                 
                 response = self.session.get(url, params=params, timeout=30)
                 
@@ -82,7 +86,7 @@ class SECHTTPClient:
                     if "Request Rate Threshold Exceeded" in response.text:
                         if attempt < max_retries:
                             delay = self._exponential_backoff(attempt)
-                            self.logger.warning(f"Rate limit exceeded, waiting {delay:.2f} seconds")
+                            logger.warning(f"Rate limit exceeded, waiting {delay:.2f} seconds")
                             time.sleep(delay)
                             continue
                         else:
@@ -90,7 +94,7 @@ class SECHTTPClient:
                 
                 # Handle other HTTP errors
                 if response.status_code == 404:
-                    self.logger.warning(f"Resource not found: {url}")
+                    logger.warning(f"Resource not found: {url}")
                     return response
                 
                 response.raise_for_status()
@@ -99,10 +103,10 @@ class SECHTTPClient:
             except requests.RequestException as e:
                 if attempt < max_retries:
                     delay = self._exponential_backoff(attempt)
-                    self.logger.warning(f"Request failed (attempt {attempt + 1}): {e}, retrying in {delay:.2f} seconds")
+                    logger.warning(f"Request failed (attempt {attempt + 1}): {e}, retrying in {delay:.2f} seconds")
                     time.sleep(delay)
                 else:
-                    self.logger.error(f"All retries failed for {url}: {e}")
+                    logger.error(f"All retries failed for {url}: {e}")
                     raise
         
         raise requests.RequestException("Max retries exceeded")
@@ -133,13 +137,13 @@ class SECHTTPClient:
                 'count': count
             }
             
-            self.logger.info(f"Fetching series data page: start={start}, count={count}")
+            logger.info(f"Fetching series data page: start={start}, count={count}")
             
             try:
                 response = self._make_request(self.series_url, params=params)
                 
                 if response.status_code == 404:
-                    self.logger.warning(f"No series data found for CIK {cik}")
+                    logger.warning(f"No series data found for CIK {cik}")
                     break
                 
                 # Parse current page
@@ -156,18 +160,18 @@ class SECHTTPClient:
                 has_more_pages = self._has_more_pages(response.text, start, count)
                 
                 if not has_more_pages:
-                    self.logger.info(f"No more pages found, stopping pagination")
+                    logger.info(f"No more pages found, stopping pagination")
                     break
                 
                 # Move to next page
                 start += count
-                self.logger.info(f"Found more pages, continuing to start={start}")
+                logger.info(f"Found more pages, continuing to start={start}")
                 
             except requests.RequestException as e:
-                self.logger.error(f"Failed to fetch series data for CIK {cik} at start={start}: {e}")
+                logger.error(f"Failed to fetch series data for CIK {cik} at start={start}: {e}")
                 break
         
-        self.logger.info(f"Fetched total of {len(all_series_data)} series records across all pages")
+        logger.info(f"Fetched total of {len(all_series_data)} series records across all pages")
         return all_series_data
     
     def _has_more_pages(self, html_content: str, current_start: int, count: int) -> bool:
@@ -241,7 +245,7 @@ class SECHTTPClient:
             return False
             
         except Exception as e:
-            self.logger.error(f"Error checking for more pages: {e}")
+            logger.error(f"Error checking for more pages: {e}")
             return False
     
     def _parse_series_response(self, html_content: str, cik: str) -> List[Dict]:
@@ -281,7 +285,7 @@ class SECHTTPClient:
                 
                 # If we found a structured table, parse it
                 if header_row and data_rows:
-                    self.logger.info(f"Found structured table with headers: {header_row}")
+                    logger.info(f"Found structured table with headers: {header_row}")
                     
                     # Process rows - series rows have colspan=2 and start with S in column 2
                     i = 0
@@ -344,7 +348,7 @@ class SECHTTPClient:
                                         
                                         if class_info:  # Only add if we found some class info
                                             series_info['classes'].append(class_info)
-                                            self.logger.debug(f"  Added class: {class_info}")
+                                            logger.debug(f"  Added class: {class_info}")
                                         
                                         j += 1
                                     else:
@@ -366,7 +370,7 @@ class SECHTTPClient:
             
             # If no structured table found, fall back to generic parsing
             if not series_data:
-                self.logger.warning(f"No structured table found, falling back to generic parsing")
+                logger.warning(f"No structured table found, falling back to generic parsing")
                 
                 # Look for any series-like patterns in the HTML
                 series_pattern = r'S\d{9}'  # Series ID pattern
@@ -384,7 +388,7 @@ class SECHTTPClient:
                     })
             
         except Exception as e:
-            self.logger.error(f"Error parsing series response for CIK {cik}: {e}")
+            logger.error(f"Error parsing series response for CIK {cik}: {e}")
             # Return partial data with error info
             series_data.append({
                 'error': str(e),
@@ -393,7 +397,7 @@ class SECHTTPClient:
                 'parse_status': 'error'
             })
         
-        self.logger.info(f"Parsed {len(series_data)} series records for CIK {cik}")
+        logger.info(f"Parsed {len(series_data)} series records for CIK {cik}")
         return series_data
     
     def save_series_data(self, series_data: List[Dict], cik: str, filename: Optional[str] = None) -> str:
@@ -430,11 +434,11 @@ class SECHTTPClient:
             with open(filepath, 'w') as f:
                 json.dump(export_data, f, indent=2, default=str)
             
-            self.logger.info(f"Series data saved to {filepath}")
+            logger.info(f"Series data saved to {filepath}")
             return filepath
             
         except Exception as e:
-            self.logger.error(f"Failed to save series data: {e}")
+            logger.error(f"Failed to save series data: {e}")
             raise
     
     def fetch_submissions(self, cik: str) -> Dict:
@@ -456,13 +460,13 @@ class SECHTTPClient:
             response = self._make_request(url)
             
             if response.status_code == 404:
-                self.logger.warning(f"No submissions found for CIK {cik}")
+                logger.warning(f"No submissions found for CIK {cik}")
                 return {}
             
             return response.json()
             
         except requests.RequestException as e:
-            self.logger.error(f"Failed to fetch submissions for CIK {cik}: {e}")
+            logger.error(f"Failed to fetch submissions for CIK {cik}: {e}")
             return {}
     
     def get_nport_filings(self, cik: str) -> List[Dict]:
@@ -486,7 +490,7 @@ class SECHTTPClient:
         recent_filings = submissions.get('filings', {}).get('recent', {})
         
         if not recent_filings:
-            self.logger.warning(f"No recent filings found for CIK {cik}")
+            logger.warning(f"No recent filings found for CIK {cik}")
             return []
         
         # Extract filing data
@@ -507,7 +511,7 @@ class SECHTTPClient:
                 }
                 nport_filings.append(filing_info)
         
-        self.logger.info(f"Found {len(nport_filings)} N-PORT filings for CIK {cik}")
+        logger.info(f"Found {len(nport_filings)} N-PORT filings for CIK {cik}")
         return nport_filings
     
     def save_nport_filings(self, nport_filings: List[Dict], cik: str, filename: Optional[str] = None) -> str:
@@ -544,11 +548,11 @@ class SECHTTPClient:
             with open(filepath, 'w') as f:
                 json.dump(export_data, f, indent=2, default=str)
             
-            self.logger.info(f"N-PORT filings data saved to {filepath}")
+            logger.info(f"N-PORT filings data saved to {filepath}")
             return filepath
             
         except Exception as e:
-            self.logger.error(f"Failed to save N-PORT filings data: {e}")
+            logger.error(f"Failed to save N-PORT filings data: {e}")
             raise
     
     def fetch_series_filings(self, series_id: str, filing_type: str = "NPORT-P") -> List[Dict]:
@@ -577,13 +581,13 @@ class SECHTTPClient:
             response = self._make_request(url, params=params)
             
             if response.status_code == 404:
-                self.logger.warning(f"No filings found for series {series_id}")
+                logger.warning(f"No filings found for series {series_id}")
                 return []
             
             return self._parse_series_filings_response(response.text, series_id, filing_type)
             
         except requests.RequestException as e:
-            self.logger.error(f"Failed to fetch series filings for {series_id}: {e}")
+            logger.error(f"Failed to fetch series filings for {series_id}: {e}")
             return []
     
     def _parse_series_filings_response(self, html_content: str, series_id: str, filing_type: str) -> List[Dict]:
@@ -679,7 +683,7 @@ class SECHTTPClient:
                             filings.append(filing_info)
                         
         except Exception as e:
-            self.logger.error(f"Error parsing series filings for {series_id}: {e}")
+            logger.error(f"Error parsing series filings for {series_id}: {e}")
             # Return partial data with error info
             filings.append({
                 'series_id': series_id,
@@ -688,7 +692,7 @@ class SECHTTPClient:
                 'parse_status': 'error'
             })
         
-        self.logger.info(f"Found {len(filings)} {filing_type} filings for series {series_id}")
+        logger.info(f"Found {len(filings)} {filing_type} filings for series {series_id}")
         return filings
     
     def save_series_filings(self, series_filings: List[Dict], series_id: str, filing_type: str = "NPORT-P", cik: Optional[str] = None, filename: Optional[str] = None) -> str:
@@ -731,11 +735,11 @@ class SECHTTPClient:
             with open(filepath, 'w') as f:
                 json.dump(export_data, f, indent=2, default=str)
             
-            self.logger.info(f"Series {filing_type} filings saved to {filepath}")
+            logger.info(f"Series {filing_type} filings saved to {filepath}")
             return filepath
             
         except Exception as e:
-            self.logger.error(f"Failed to save series filings data: {e}")
+            logger.error(f"Failed to save series filings data: {e}")
             raise
     
     def load_series_data(self, cik: str) -> Dict:
@@ -756,14 +760,14 @@ class SECHTTPClient:
             with open(filepath, 'r') as f:
                 data = json.load(f)
             
-            self.logger.info(f"Loaded series data from {filepath}")
+            logger.info(f"Loaded series data from {filepath}")
             return data
             
         except FileNotFoundError:
-            self.logger.warning(f"Series data file not found: {filepath}")
+            logger.warning(f"Series data file not found: {filepath}")
             return {}
         except Exception as e:
-            self.logger.error(f"Failed to load series data: {e}")
+            logger.error(f"Failed to load series data: {e}")
             return {}
         
     def load_series_filings(self, cik: str, series_id: str, filing_type: str = "NPORT-P") -> Dict:
@@ -788,11 +792,11 @@ class SECHTTPClient:
                 data = json.load(f)
 
 
-            self.logger.info(f"Loaded series filings from {filepath}")
+            logger.info(f"Loaded series filings from {filepath}")
             return data
 
         except FileNotFoundError:
-            self.logger.warning(f"Series filings file not found: {filepath}")
+            logger.warning(f"Series filings file not found: {filepath}")
             return {}
 
     
@@ -823,7 +827,7 @@ class SECHTTPClient:
         # Remove duplicates and sort
         unique_series_ids = sorted(list(set(series_ids)))
         
-        self.logger.info(f"Extracted {len(unique_series_ids)} unique series IDs")
+        logger.info(f"Extracted {len(unique_series_ids)} unique series IDs")
         return unique_series_ids
     
     def process_cik_series_filings(self, cik: str, filing_type: str = "NPORT-P") -> Dict[str, str]:
@@ -841,23 +845,23 @@ class SECHTTPClient:
         series_data = self.load_series_data(cik)
         
         if not series_data:
-            self.logger.error(f"No series data found for CIK {cik}")
+            logger.error(f"No series data found for CIK {cik}")
             return {}
         
         # Extract series IDs
         series_ids = self.extract_series_ids(series_data)
         
         if not series_ids:
-            self.logger.warning(f"No valid series IDs found for CIK {cik}")
+            logger.warning(f"No valid series IDs found for CIK {cik}")
             return {}
         
-        self.logger.info(f"Processing {len(series_ids)} series for CIK {cik}")
+        logger.info(f"Processing {len(series_ids)} series for CIK {cik}")
         
         saved_files = {}
         
         for series_id in series_ids:
             try:
-                self.logger.info(f"Fetching {filing_type} filings for series {series_id}")
+                logger.info(f"Fetching {filing_type} filings for series {series_id}")
                 
                 # Fetch series-specific filings
                 series_filings = self.fetch_series_filings(series_id, filing_type)
@@ -867,15 +871,15 @@ class SECHTTPClient:
                     saved_file = self.save_series_filings(series_filings, series_id, filing_type, cik)
                     saved_files[series_id] = saved_file
                     
-                    self.logger.info(f"Found {len(series_filings)} {filing_type} filings for {series_id}")
+                    logger.info(f"Found {len(series_filings)} {filing_type} filings for {series_id}")
                 else:
-                    self.logger.warning(f"No {filing_type} filings found for series {series_id}")
+                    logger.warning(f"No {filing_type} filings found for series {series_id}")
                     
             except Exception as e:
-                self.logger.error(f"Failed to process series {series_id}: {e}")
+                logger.error(f"Failed to process series {series_id}: {e}")
                 continue
         
-        self.logger.info(f"Completed processing {len(saved_files)} series for CIK {cik}")
+        logger.info(f"Completed processing {len(saved_files)} series for CIK {cik}")
         return saved_files
     
     def _extract_accession_number(self, cell_texts: List[str]) -> Optional[str]:
@@ -896,11 +900,11 @@ class SECHTTPClient:
                 match = re.search(accession_pattern, text)
                 if match:
                     accession_number = match.group(1)
-                    self.logger.debug(f"Extracted accession number: {accession_number} from text: {text}")
+                    logger.debug(f"Extracted accession number: {accession_number} from text: {text}")
                     return accession_number
         
         # If no match found, log for debugging
-        self.logger.debug(f"No accession number found in cell texts: {cell_texts}")
+        logger.debug(f"No accession number found in cell texts: {cell_texts}")
         return None
     
     def build_nport_url(self, cik: str, accession_number: str) -> str:
@@ -947,18 +951,18 @@ class SECHTTPClient:
             response = self._make_request(url)
             
             if response.status_code == 404:
-                self.logger.warning(f"N-PORT XML not found for accession {accession_number}")
+                logger.warning(f"N-PORT XML not found for accession {accession_number}")
                 return None
             
             # Restore original headers
             self.headers['Accept'] = original_accept
             self.session.headers.update(self.headers)
             
-            self.logger.info(f"Downloaded N-PORT XML for accession {accession_number} ({len(response.text)} bytes)")
+            logger.info(f"Downloaded N-PORT XML for accession {accession_number} ({len(response.text)} bytes)")
             return response.text
             
         except requests.RequestException as e:
-            self.logger.error(f"Failed to download N-PORT XML for {accession_number}: {e}")
+            logger.error(f"Failed to download N-PORT XML for {accession_number}: {e}")
             return None
     
     def save_nport_xml(self, xml_content: str, accession_number: str, cik: str, series_id: str, filename: Optional[str] = None) -> str:
@@ -991,11 +995,11 @@ class SECHTTPClient:
             with open(filepath, 'w', encoding='utf-8') as f:
                 f.write(xml_content)
             
-            self.logger.info(f"N-PORT XML saved to {filepath}")
+            logger.info(f"N-PORT XML saved to {filepath}")
             return filepath
             
         except Exception as e:
-            self.logger.error(f"Failed to save N-PORT XML: {e}")
+            logger.error(f"Failed to save N-PORT XML: {e}")
             raise
     
     def build_nport_index_url(self, cik: str, accession_number: str) -> str:

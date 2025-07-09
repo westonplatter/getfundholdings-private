@@ -69,7 +69,7 @@ def main():
         
         # Save to CSV
         output_file = "top_holdings_with_tickers.csv"
-        top_holdings.to_csv(output_file, index=False)
+        top_holdings.to_csv(output_file, index=False, quoting=1)
         print(f"\nSaved to {output_file}")
 
 

@@ -1,175 +1,230 @@
-# Product Requirements Document: SEC EDGAR Data Fetcher
+# PRD: workflow.py - End-to-End Fund Holdings Data Pipeline
 
-## 1. Overview
+## Overview
 
-Create a comprehensive SEC EDGAR data fetching system that retrieves series information and NPORT-P filing data for ETF holdings analysis. The implementation includes series lookup, NPORT-P filing enumeration, and data export capabilities for downstream N-PORT holdings processing.
+Create a formal, production-ready workflow system that orchestrates the complete data pipeline from fund CIK lookup to enriched holdings data. This replaces the incremental development approach in `main.py` with a structured, error-handling workflow system.
 
-## 2. Business Requirements
+## Current Code Analysis
 
-### 2.1 Primary Objectives
-- Fetch series data from SEC series lookup page: `https://www.sec.gov/cgi-bin/series`
-- Retrieve NPORT-P filing information from SEC submissions API: `https://data.sec.gov/submissions/`
-- Extract series/class information and filing metadata for a given CIK number
-- Export structured data to JSON files for N-PORT holdings processing
-- Demonstrate compliance with SEC access requirements and legal obligations
+### Existing Components
+- **SEC Client (`fh/sec_client.py`)**: Complete SEC EDGAR-compliant HTTP client with rate limiting, retry logic, and comprehensive series/filing data fetching
+- **N-PORT Parser (`parse_nport.py`)**: Full XML parsing for N-PORT filings with holdings extraction
+- **CUSIP-to-Ticker Mapper (`fh/openfigi_client.py`)**: OpenFIGI API client for enriching holdings with ticker symbols
+- **Data Processing Examples (`main.py`)**: Prototype functions showing individual steps
 
-### 2.2 Success Criteria ✅ COMPLETED
-- ✅ Successfully retrieve series data for IVV (CIK: 1100663) - Found 1012 series records
-- ✅ Parse and structure series information from HTML response
-- ✅ Successfully retrieve NPORT-P filings - Found 1376 NPORT-P filings
-- ✅ Maintain compliance with SEC rate limiting (10 requests/second)
-- ✅ Export structured data to JSON files for downstream processing
-- ✅ Save data to `data/series_data_1100663.json` and `data/nport_filings_1100663.json`
+### Data Flow Architecture
+1. **CIK � Series/Class Data**: Fetch fund series information via SEC series lookup
+2. **Series � N-PORT Filings**: Get all N-PORT filings for each series
+3. **Filings � XML Data**: Download N-PORT XML files from SEC EDGAR
+4. **XML � Holdings Data**: Parse XML to extract structured holdings information
+5. **Holdings � Enriched Data**: Add ticker symbols via CUSIP lookup
 
-## 3. Technical Requirements
+## Requirements
 
-### 3.1 SEC EDGAR API Compliance
-- **User-Agent Header**: Must include company name and email in format `"Company Name email@domain.com"`
-- **Rate Limiting**: Maximum 10 requests per second with 0.1 second minimum intervals
-- **Error Handling**: Implement exponential backoff for HTTP 403/404 responses
-- **Legal Compliance**: Maintain access logs per Computer Fraud and Abuse Act requirements
+### 1. Core Workflow Engine
 
-### 3.2 Data Sources
-- **Series Lookup**: SEC series lookup page `https://www.sec.gov/cgi-bin/series`
-- **Submissions API**: SEC submissions API `https://data.sec.gov/submissions/CIK{formatted_cik}.json`
-- **Target Fund**: IVV (iShares Core S&P 500 ETF)
-- **CIK Number**: 1100663 (10-digit format with leading zeros: 0001100663)
-- **Key Series ID**: S000004310 (iShares Core S&P 500 ETF)
-- **Filing Types**: NPORT-P, NPORT-P/A forms
+**File**: `fh/workflow.py`
 
-### 3.3 Data Processing Requirements
-- Parse HTML response from series lookup page
-- Parse JSON response from submissions API  
-- Extract series information including:
-  - Series name
-  - Series ID (e.g., S000004310)
-  - Class/contract information
-  - Any additional metadata available
-- Extract NPORT-P filing information including:
-  - Form type (NPORT-P, NPORT-P/A)
-  - Filing dates and report dates
-  - Accession numbers for direct EDGAR access
-  - Filing metadata for holdings retrieval
+**Main Class**: `FundHoldingsWorkflow`
 
-### 3.4 Data Output ✅ IMPLEMENTED
-- ✅ Return structured data (list of dictionaries)
-- ✅ Include metadata: CIK, request timestamp, response status
-- ✅ Export to JSON files with proper formatting
-- ✅ Handle empty results gracefully
-- ✅ Log all requests for compliance auditing
-- ✅ Data files: `data/series_data_1100663.json`, `data/nport_filings_1100663.json`
+**Key Features**:
+- Orchestrates complete end-to-end pipeline
+- Configurable steps with error handling
+- Progress tracking and logging
+- Resumable execution for large datasets
+- Data validation at each step
 
-## 4. Technical Architecture
+### 2. Pipeline Steps
 
-### 4.1 Core Components ✅ IMPLEMENTED
-1. ✅ **SECHTTPClient**: Generic HTTP client with SEC-compliant headers and rate limiting
-2. ✅ **SeriesLookup**: Method to fetch series data for a given CIK
-3. ✅ **SubmissionsAPI**: Method to fetch NPORT-P filing data from SEC API
-4. ✅ **HTMLParser**: Parse HTML response and extract series information
-5. ✅ **ResponseHandler**: Handle HTTP errors and retry logic
-6. ✅ **DataExport**: Save structured data to JSON files
-
-### 4.2 Data Flow ✅ IMPLEMENTED
+#### Step 1: CIK Series Discovery
+```python
+def fetch_cik_series_data(self, cik: str) -> SeriesDataResult:
+    """Fetch and validate all series for a given CIK"""
 ```
-CIK Input → Series Lookup URL → HTTP Request → HTML Response → Parser → Structured Data
-CIK Input → Submissions API → JSON Response → Parser → NPORT-P Filings → Export
+- Use `SECHTTPClient.fetch_series_data()`
+- Validate series data structure
+- Save to `data/series_data_{cik}.json`
+- Return series IDs list
+
+#### Step 2: N-PORT Filings Collection
+```python
+def collect_nport_filings(self, cik: str, series_ids: List[str]) -> FilingsResult:
+    """Collect all N-PORT filings for all series"""
+```
+- Use `SECHTTPClient.fetch_series_filings()` per series
+- Aggregate filings across all series
+- Save to `data/nport_filings_{cik}.json`
+- Return filing metadata
+
+#### Step 3: XML Data Download
+```python
+def download_nport_xml_files(self, cik: str, filings: List[Filing]) -> DownloadResult:
+    """Download N-PORT XML files for processing"""
+```
+- Use `SECHTTPClient.download_and_save_nport()`
+- Handle rate limiting and errors
+- Save to `data/nport_{cik}_{series_id}_{accession}.xml`
+- Return file paths
+
+#### Step 4: Holdings Data Extraction
+```python
+def extract_holdings_data(self, xml_files: List[str]) -> HoldingsResult:
+    """Parse XML files and extract holdings data"""
+```
+- Use `parse_nport_file()` from parse_nport module
+- Combine holdings from multiple files
+- Save to `data/holdings_{cik}_{timestamp}.csv`
+- Return consolidated DataFrame
+
+#### Step 5: Ticker Enrichment
+```python
+def enrich_with_tickers(self, holdings_df: pd.DataFrame) -> EnrichedResult:
+    """Add ticker symbols to holdings data"""
+```
+- Use `OpenFIGIClient.add_tickers_to_dataframe()`
+- Handle API rate limiting
+- Save to `data/holdings_enriched_{cik}_{timestamp}.csv`
+- Return enriched DataFrame
+
+### 3. Configuration System
+
+**File**: `fh/workflow_config.py`
+
+```python
+@dataclass
+class WorkflowConfig:
+    cik_list: List[str]
+    data_dir: str = "data"
+    max_concurrent_downloads: int = 3
+    enable_ticker_enrichment: bool = True
+    resumable: bool = True
+    validate_xml: bool = True
 ```
 
-### 4.3 Error Handling
-- HTTP 403: Rate limit exceeded - implement exponential backoff
-- HTTP 404: Series not found - log and return empty result
-- HTML parsing errors: Log error details and return partial data
-- Network timeouts: Retry with exponential backoff
+### 4. Error Handling & Resilience
 
-## 5. Implementation Phases ✅ COMPLETED
+**Features**:
+- Exponential backoff for SEC API calls
+- Retry logic for failed downloads
+- Graceful handling of malformed XML
+- Checkpoint system for resumable execution
+- Comprehensive logging for debugging
 
-### Phase 1: Core HTTP Client ✅ COMPLETED
-- ✅ Implement SEC-compliant HTTP client with proper headers
-- ✅ Add rate limiting functionality (10 requests/second)
-- ✅ Implement exponential backoff retry logic
+### 5. Data Models
 
-### Phase 2: Series Lookup Method ✅ COMPLETED
-- ✅ Create method to fetch series data for given CIK
-- ✅ Build proper URL with query parameters
-- ✅ Handle HTTP response and status codes
+**File**: `fh/data_models.py`
 
-### Phase 3: HTML Parsing ✅ COMPLETED
-- ✅ Parse HTML response from series lookup page
-- ✅ Extract series information from HTML structure
-- ✅ Return structured data format
+```python
+@dataclass
+class SeriesInfo:
+    cik: str
+    series_id: str
+    classes: List[Dict]
+    
+@dataclass
+class Filing:
+    cik: str
+    series_id: str
+    accession_number: str
+    filing_date: str
+    form_type: str
+    
+@dataclass
+class WorkflowResult:
+    cik: str
+    total_series: int
+    total_filings: int
+    total_holdings: int
+    enriched_holdings: int
+    execution_time: float
+```
 
-### Phase 4: NPORT-P Filing Retrieval ✅ COMPLETED
-- ✅ Implement submissions API integration
-- ✅ Filter for NPORT-P and NPORT-P/A filings
-- ✅ Extract filing metadata (dates, accession numbers)
+### 6. Usage Interface
 
-### Phase 5: Data Export ✅ COMPLETED
-- ✅ Save series data to JSON files
-- ✅ Save NPORT-P filing data to JSON files
-- ✅ Include metadata and timestamps
+**Primary Interface**:
+```python
+from fh.workflow import FundHoldingsWorkflow
+from fh.workflow_config import WorkflowConfig
 
-### Phase 6: Testing & Validation ✅ COMPLETED
-- ✅ Test with IVV (CIK: 1100663) as proof of concept
-- ✅ Validate compliance with SEC requirements
-- ✅ Error handling and edge case testing
+config = WorkflowConfig(
+    cik_list=["1100663"],  # iShares
+    enable_ticker_enrichment=True
+)
 
-## 6. Acceptance Criteria
+workflow = FundHoldingsWorkflow(config)
+results = workflow.run()
+```
 
-### 6.1 Functional Requirements ✅ ALL COMPLETED
-- ✅ Successfully fetch series data for IVV (CIK: 1100663) - **1012 series records**
-- ✅ Parse HTML response and extract series information
-- ✅ Successfully fetch NPORT-P filings - **1376 NPORT-P filings**
-- ✅ Return structured data (list of dictionaries)
-- ✅ Handle rate limiting without triggering IP blocks
-- ✅ Implement proper error handling and logging
-- ✅ Export data to JSON files for downstream processing
+**CLI Interface**:
+```bash
+uv run python -m fh.workflow --cik 1100663 --enrich-tickers
+```
 
-### 6.2 Non-Functional Requirements ✅ ALL COMPLETED
-- ✅ Response time: < 5 seconds per request
-- ✅ Rate compliance: Never exceed 10 requests/second
-- ✅ Reliability: Handle network failures gracefully
-- ✅ Security: No credentials or sensitive data in logs
-- ✅ Compliance: All requests logged for audit purposes
+## Implementation Plan
 
-## 7. Risk Mitigation
+### Phase 1: Core Workflow Structure
+1. Create `fh/workflow.py` with main workflow class
+2. Implement configuration system
+3. Add basic error handling and logging
+4. Create data models for type safety
 
-### 7.1 Legal & Compliance Risks
-- **Risk**: IP blocking for non-compliance
-- **Mitigation**: Strict adherence to SEC header and rate limiting requirements
+### Phase 2: Pipeline Implementation
+1. Implement each workflow step as separate method
+2. Add checkpoint system for resumability
+3. Integrate existing client classes
+4. Add progress tracking
 
-### 7.2 Technical Risks
-- **Risk**: HTML parsing failures on page structure changes
-- **Mitigation**: Robust error handling and flexible parsing logic
+### Phase 3: Enhanced Features
+1. Add concurrent processing for downloads
+2. Implement data validation
+3. Add CLI interface
+4. Create comprehensive testing
 
-### 7.3 Data Quality Risks
-- **Risk**: Incomplete or malformed data extraction
-- **Mitigation**: Comprehensive validation and error reporting
+### Phase 4: Production Readiness
+1. Add monitoring and metrics
+2. Implement data quality checks
+3. Add documentation
+4. Performance optimization
 
-## 8. Success Metrics ✅ ACHIEVED
+## Technical Considerations
 
-- ✅ **Request Success Rate**: 100% successful HTTP requests
-- ✅ **Compliance Rate**: 0% SEC violations or IP blocks
-- ✅ **Processing Speed**: Complete series lookup in < 5 seconds
-- ✅ **Error Rate**: 0% parsing errors on valid responses
-- ✅ **Data Volume**: 1012 series records + 1376 NPORT-P filings retrieved
+### SEC Compliance
+- Maintain 10 requests/second rate limit
+- Use proper User-Agent headers
+- Implement exponential backoff
+- Log all requests for compliance
 
-## 9. Current Status & Next Steps
+### Data Storage
+- Use consistent naming conventions
+- Implement data versioning
+- Add metadata to output files
+- Support resume from checkpoints
 
-### ✅ COMPLETED DELIVERABLES
-- **Series Data**: `data/series_data_1100663.json` with 1012 series records
-- **NPORT-P Filings**: `data/nport_filings_1100663.json` with 1376 filing records  
-- **Key Series Identified**: S000004310 (iShares Core S&P 500 ETF)
-- **SEC Compliance**: Full adherence to rate limiting and header requirements
+### Error Handling
+- Distinguish between retryable and permanent errors
+- Log detailed error information
+- Provide meaningful error messages
+- Support partial completion
 
-### 🚧 CLEANUP WORK NEEDED
-1. **Series Data Quality**: Raw HTML parsing captured navigation elements - needs filtering
-2. **Filing Selection**: 1376 filings need filtering to most recent/relevant for IVV holdings
-3. **Data Validation**: Verify series ID S000004310 mapping to IVV specifically
-4. **File Organization**: Consider separate files per series or date ranges
+### Performance
+- Batch API calls where possible
+- Use connection pooling
+- Implement caching for repeated data
+- Monitor memory usage for large files
 
-### 📋 FUTURE ENHANCEMENTS
-- N-PORT XML parsing for holdings extraction
-- Batch processing for multiple CIKs
-- Caching mechanism for frequently accessed data
-- Integration with holdings data warehouse
-- Support for historical holdings analysis
+## Success Metrics
+
+1. **Reliability**: 99%+ success rate for complete workflows
+2. **Performance**: Process 1000+ holdings per minute
+3. **Compliance**: Zero SEC rate limit violations
+4. **Resumability**: Ability to resume from any checkpoint
+5. **Data Quality**: 95%+ ticker enrichment success rate
+
+## Migration Path
+
+1. **Phase 1**: Run alongside existing `main.py` for validation
+2. **Phase 2**: Migrate incremental functions to workflow system
+3. **Phase 3**: Replace `main.py` with workflow-based approach
+4. **Phase 4**: Add production monitoring and alerts
+
+This PRD provides a comprehensive plan for transforming the existing prototype code into a production-ready, end-to-end workflow system that reliably processes fund holdings data from CIK to enriched holdings.
