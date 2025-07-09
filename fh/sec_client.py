@@ -15,7 +15,7 @@ class SECHTTPClient:
     Implements mandatory headers, rate limiting, and retry logic per SEC requirements.
     """
     
-    def __init__(self, user_agent: str = "Weston Platter westonplatter@gmail.com"):
+    def __init__(self, user_agent: str = "GetFundHoldings.com admin@getfundholdings.com"):
         """
         Initialize SEC HTTP client with compliant headers.
         

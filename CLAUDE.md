@@ -4,12 +4,75 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a private, closed-source Python codebase for fetching data from the SEC EDGAR system and storing it in a private data warehouse. It's the third component of the GetFundHoldings.com ecosystem, complementing the public website and open-source download scripts.
+This is a **fund holdings data pipeline** - a private, closed-source Python workflow system that extracts, processes, and enriches SEC filing data to create structured investment holdings datasets. It's the third component of the GetFundHoldings.com ecosystem, complementing the public website and open-source download scripts.
+
+### Core Pipeline Architecture
+
+The system implements a **5-stage data workflow** orchestrated by `fh/workflow.py`:
+
+```
+CIK → Series/Class → N-PORT Filings → XML Data → Holdings → Enriched Artifacts
+```
+
+**Pipeline Stages:**
+1. **Series Discovery**: Extract fund series/class data from SEC submissions API
+2. **Filing Collection**: Gather N-PORT XML filing metadata for each series
+3. **XML Download**: Retrieve actual N-PORT XML files from SEC EDGAR
+4. **Holdings Extraction**: Parse XML to extract structured investment holdings data
+5. **Ticker Enrichment**: Enhance holdings with ticker symbols via OpenFIGI API
+
+**Output Artifacts:**
+- `holdings_{cik}_{timestamp}.csv` - Raw extracted holdings data
+- `holdings_enriched_{cik}_{timestamp}.csv` - Holdings enhanced with ticker symbols
+
+## Primary Workflow Usage
+
+**Core Interface** (`fh/workflow.py`):
+```python
+from fh.workflow import FundHoldingsWorkflow, WorkflowConfig
+
+config = WorkflowConfig(
+    cik_list=["1100663"],  # Target fund companies
+    enable_ticker_enrichment=True,
+    interested_etf_tickers=["IVV"]  # Optional filtering
+)
+
+workflow = FundHoldingsWorkflow(config)
+results = workflow.run()  # Execute complete pipeline
+```
+
+**Entry Points:**
+- `uv run python -m fh.workflow` - CLI execution
+- `uv run python main.py` - Legacy interface
+- Direct import for programmatic use
+
+## Data Enhancement Pipeline
+
+### Ticker Symbol Enrichment
+The pipeline implements **dual-identifier ticker lookup** via OpenFIGI API:
+
+1. **Primary**: CUSIP-based ticker lookup for US securities
+2. **Fallback**: ISIN-based ticker lookup for international securities
+
+**Enhancement Logic:**
+```python
+# Step 1: CUSIP lookup (US domestic securities)
+enriched_df = openfigi_client.add_tickers_to_dataframe(holdings_df, 'cusip')
+
+# Step 2: ISIN fallback (international securities traded on US exchanges)
+failed_cusip_holdings = enriched_df[enriched_df['ticker'].isna()]
+isin_enriched = openfigi_client.add_tickers_to_dataframe_by_isin(
+    failed_cusip_holdings, 'isin'
+)
+```
+
+This approach maximizes ticker coverage for both domestic and international holdings.
 
 ## Python Development Commands
 
 - Run Python commands: `uv run python <script>`
-- Run main script: `uv run python main.py`
+- Execute workflow: `uv run python -m fh.workflow`
+- Debug ISIN lookups: `uv run python debug_isin_lookup.py`
 - Project uses pyproject.toml for dependency management
 
 ## SEC EDGAR API Requirements
@@ -34,50 +97,35 @@ This is a private, closed-source Python codebase for fetching data from the SEC 
 - Violations can result in prosecution for unauthorized computer access
 - Maintain detailed access logs
 
-## Technical Implementation Patterns
+## Data Processing Requirements
 
-### SEC Client Implementation
-```python
-class SECEdgarClient:
-    def __init__(self, user_agent: str):
-        self.headers = {
-            'User-Agent': user_agent,
-            'Accept': 'application/json',
-            'Accept-Encoding': 'gzip, deflate'
-        }
-        self.last_request_time = 0
-        self.min_interval = 0.1  # 10 requests per second maximum
-    
-    def _rate_limit(self):
-        current_time = time.time()
-        time_since_last = current_time - self.last_request_time
-        if time_since_last < self.min_interval:
-            time.sleep(self.min_interval - time_since_last)
-        self.last_request_time = time.time()
-```
+### N-PORT XML Processing
+- Handle up to 500,000 investment entries per filing
+- Process security identifiers: CUSIPs, ISINs, LEIs
+- Extract market values, percentage allocations, security classifications
+- Support complex nested XML structures per N-PORT Technical Specification v2.0
 
-### API Endpoints
-- **Submissions API**: `data.sec.gov/submissions/` (requires 10-digit CIK with leading zeros)
-- **XBRL APIs**: Support additional query parameters
-- **Direct EDGAR files**: `sec.gov/Archives/edgar/data/` (same header requirements)
-- **N-PORT filings**: XML Technical Specification Version 2.0
-
-### Data Processing Requirements
-- Handle up to 500,000 investment entries per N-PORT filing
-- Process security names, CUSIPs, ISINs, market values, percentage allocations
-- Real-time processing capabilities (sub-300ms updates)
-- Bulk download support for historical data
-- Handle complex nested XML structures
-
-## Common Pitfalls to Avoid
-- Using default library User-Agent strings (e.g., "Python-requests")
-- Browser-spoofing User-Agent strings
-- Failing to implement proper rate limiting
-- Incorrect Host headers for data.sec.gov endpoints
-- Malformed CIK formatting (must be 10-digit with leading zeros)
+### OpenFIGI Ticker Enhancement
+- Rate limited to 25 requests/minute (without API key)
+- Dual-identifier support: CUSIP and ISIN lookups
+- Caching system prevents duplicate API calls
+- Filters for US exchanges and equity securities
 
 ## Architecture Notes
-- No CORS support - server-side implementation required
-- Implement comprehensive error handling for HTTP 404, 403, and rate limit responses
-- Use proper exponential backoff retry logic
-- Maintain detailed logging for compliance auditing
+
+### Pipeline Orchestration
+- **Stateful Processing**: Each stage saves intermediate artifacts to `data/` directory
+- **Error Resilience**: Individual stage failures don't break entire pipeline
+- **Resumable Execution**: Can restart from any completed stage
+- **Configurable Limits**: Support for partial processing (max series, max filings)
+
+### Data Flow Patterns
+- **SEC Compliance**: All HTTP clients implement proper rate limiting and headers
+- **File-Based Persistence**: JSON for metadata, CSV for tabular holdings data
+- **Comprehensive Logging**: Detailed execution logs for debugging and compliance
+
+### Common Pitfalls to Avoid
+- Using default library User-Agent strings (e.g., "Python-requests")
+- Failing to implement proper rate limiting for both SEC and OpenFIGI APIs
+- Malformed CIK formatting (must be 10-digit with leading zeros)
+- Caching null/failed API responses (now prevented)

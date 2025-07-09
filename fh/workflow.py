@@ -27,7 +27,7 @@ class WorkflowConfig:
     enable_ticker_enrichment: bool = True
     max_series_per_cik: int = None  # None = no limit
     max_filings_per_series: int = None  # None = no limit
-    user_agent: str = "Weston Platter westonplatter@gmail.com"
+    user_agent: str = "GetFundHoldings.com admin@getfundholdings.com"
     interested_etf_tickers: Optional[List[str]] = None
 
 
