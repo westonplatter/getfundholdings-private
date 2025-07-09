@@ -184,9 +184,16 @@ class NPortParser:
             if missing_count > 0:
                 logger.warning(f"Found {missing_count}/{total_count} holdings ({missing_count/total_count*100:.1f}%) with missing CUSIPs")
                 
-                # Log details about holdings with missing CUSIPs
+                # Check how many have ISINs as alternative
                 missing_holdings = holdings_df[missing_cusip_mask]
-                logger.warning(f"Holdings missing CUSIPs:")
+                has_isin_mask = (missing_holdings['isin'].notna()) & (missing_holdings['isin'] != '')
+                isin_available_count = has_isin_mask.sum()
+                
+                if isin_available_count > 0:
+                    logger.info(f"Alternative: {isin_available_count}/{missing_count} holdings with missing CUSIPs have ISINs available for ticker lookup")
+                
+                # Log details about holdings with missing CUSIPs
+                logger.warning(f"Holdings missing CUSIPs (ISIN available for ticker lookup):")
                 for idx, row in missing_holdings.iterrows():
                     # Show name, value, and alternative identifiers
                     name = row.get('name', 'Unknown')[:50]  # Truncate long names
@@ -200,7 +207,8 @@ class NPortParser:
                     
                     isin = row.get('isin', '')
                     other_id = row.get('other_id', '')
-                    logger.warning(f"  - {name} ({value_str}) - ISIN: {isin}, Other: {other_id}")
+                    isin_indicator = "✓" if isin else "✗"
+                    logger.warning(f"  - {name} ({value_str}) - ISIN: {isin} {isin_indicator}, Other: {other_id}")
         
         # Convert numeric columns
         numeric_columns = ['balance', 'value_usd', 'percent_value', 'loan_value']

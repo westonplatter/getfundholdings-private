@@ -256,13 +256,59 @@ class FundHoldingsWorkflow:
         return None
     
     def _enrich_with_tickers(self, holdings_file: str, cik: str) -> Optional[str]:
-        """Enrich holdings data with ticker symbols."""
+        """Enrich holdings data with ticker symbols using both CUSIP and ISIN lookups."""
         try:
             # Load holdings data
             holdings_df = pd.read_csv(holdings_file)
+            logger.info(f"Starting ticker enrichment for {len(holdings_df)} holdings")
             
-            # Add ticker symbols
+            # Step 1: Try CUSIP lookup first
+            logger.info("Step 1: Attempting ticker lookup via CUSIP")
             enriched_df = self.openfigi_client.add_tickers_to_dataframe(holdings_df, cusip_column='cusip')
+            
+            # Step 2: For failed CUSIP lookups, try ISIN lookup
+            failed_cusip_mask = enriched_df['ticker'].isna()
+            failed_cusip_count = failed_cusip_mask.sum()
+            
+            if failed_cusip_count > 0 and 'isin' in enriched_df.columns:
+                logger.info(f"Step 2: {failed_cusip_count} holdings failed CUSIP lookup, trying ISIN lookup")
+                
+                # Get holdings that failed CUSIP lookup but have ISINs
+                failed_cusip_holdings = enriched_df[failed_cusip_mask].copy()
+                has_isin_mask = (failed_cusip_holdings['isin'].notna()) & (failed_cusip_holdings['isin'] != '')
+                isin_candidates = failed_cusip_holdings[has_isin_mask]
+                
+                if not isin_candidates.empty:
+                    logger.info(f"Found {len(isin_candidates)} holdings with ISINs to try")
+                    
+                    # Try ISIN lookup for these holdings
+                    isin_enriched = self.openfigi_client.add_tickers_to_dataframe_by_isin(
+                        isin_candidates, isin_column='isin'
+                    )
+                    
+                    # Update the main dataframe with successful ISIN lookups
+                    # Only update where ISIN lookup succeeded (ticker is not null)
+                    successful_isin_mask = isin_enriched['ticker'].notna()
+                    if successful_isin_mask.any():
+                        successful_isin_lookups = isin_enriched[successful_isin_mask]
+                        logger.info(f"ISIN lookup successful for {len(successful_isin_lookups)} additional holdings")
+                        
+                        # Update the ticker column for these rows in the original dataframe
+                        for idx in successful_isin_lookups.index:
+                            enriched_df.loc[idx, 'ticker'] = successful_isin_lookups.loc[idx, 'ticker']
+                else:
+                    logger.info("No holdings with valid ISINs found for fallback lookup")
+            elif failed_cusip_count > 0:
+                logger.info(f"{failed_cusip_count} holdings failed CUSIP lookup, but no ISIN column available")
+            
+            # Final summary
+            total_with_tickers = enriched_df['ticker'].notna().sum()
+            total_without_tickers = len(enriched_df) - total_with_tickers
+            success_rate = total_with_tickers / len(enriched_df) * 100 if len(enriched_df) > 0 else 0
+            
+            logger.info(f"Ticker enrichment complete: {total_with_tickers}/{len(enriched_df)} holdings have tickers ({success_rate:.1f}%)")
+            if total_without_tickers > 0:
+                logger.warning(f"{total_without_tickers} holdings still missing tickers after both CUSIP and ISIN lookup attempts")
             
             # Save enriched data
             timestamp = int(time.time())

@@ -188,9 +188,39 @@ class OpenFIGIClient:
         # Make API request
         ticker = self._fetch_ticker_from_api(cusip)
         
-        # Cache the result (even if None to avoid repeated API calls)
-        self.cache[cusip] = ticker
-        self._save_cache()
+        # Cache only successful results (avoid storing null values)
+        if ticker is not None:
+            self.cache[cusip] = ticker
+            self._save_cache()
+        
+        return ticker
+    
+    def get_ticker_from_isin(self, isin: str) -> Optional[str]:
+        """
+        Get ticker symbol from ISIN identifier.
+        
+        Args:
+            isin: 12-character ISIN identifier
+            
+        Returns:
+            Ticker symbol if found, None otherwise
+        """
+        if not isin or not isinstance(isin, str) or len(isin) != 12:
+            logger.warning(f"Invalid ISIN format: {isin} (type: {type(isin)})")
+            return None
+        
+        # Check cache first
+        if isin in self.cache:
+            logger.debug(f"Cache hit for ISIN {isin}: {self.cache[isin]}")
+            return self.cache[isin]
+        
+        # Make API request
+        ticker = self._fetch_ticker_from_api_isin(isin)
+        
+        # Cache only successful results (avoid storing null values)
+        if ticker is not None:
+            self.cache[isin] = ticker
+            self._save_cache()
         
         return ticker
     
@@ -238,6 +268,52 @@ class OpenFIGIClient:
             logger.error(f"Unexpected error fetching ticker for CUSIP {cusip}: {e}")
             return None
     
+    def _fetch_ticker_from_api_isin(self, isin: str) -> Optional[str]:
+        """
+        Fetch ticker from OpenFIGI API using ISIN identifier.
+        
+        Args:
+            isin: ISIN identifier
+            
+        Returns:
+            Ticker symbol if found, None otherwise
+        """
+        try:
+            # Build request payload for ISIN lookup
+            payload = [{
+                "idType": "ID_ISIN",
+                "idValue": isin,
+                "exchCode": "US",  # Focus on US exchanges
+                # "securityType2": "Common Stock"  # Focus on common stock securities
+            }]
+            
+            response = self._make_request(self.mapping_url, payload)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Parse response to extract ticker
+                if data and len(data) > 0 and 'data' in data[0]:
+                    for item in data[0]['data']:
+                        # Look for equity instruments with ticker symbols
+                        if (item.get('ticker') and 
+                            item.get('marketSector') in ['Equity', 'Corp'] and
+                            item.get('securityType2') in ['Common Stock', 'Equity'] and # this my current filter from https://api.openfigi.com/v3/mapping/values/securityType2
+                            item.get('exchCode') == 'US'):
+                            ticker = item['ticker']
+                            logger.debug(f"Found ticker {ticker} for ISIN {isin}")
+                            return ticker
+                
+                logger.debug(f"No ticker found for ISIN {isin}")
+                return None
+                
+        except requests.RequestException as e:
+            logger.error(f"API request failed for ISIN {isin}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error fetching ticker for ISIN {isin}: {e}")
+            return None
+    
     def get_multiple_tickers(self, cusips: List[str]) -> Dict[str, Optional[str]]:
         """
         Get ticker symbols for multiple CUSIP identifiers.
@@ -253,6 +329,24 @@ class OpenFIGIClient:
         for i, cusip in enumerate(cusips):
             logger.info(f"Processing CUSIP {i+1}/{len(cusips)}: {cusip}")
             results[cusip] = self.get_ticker_from_cusip(cusip)
+        
+        return results
+    
+    def get_multiple_tickers_from_isins(self, isins: List[str]) -> Dict[str, Optional[str]]:
+        """
+        Get ticker symbols for multiple ISIN identifiers.
+        
+        Args:
+            isins: List of ISIN identifiers
+            
+        Returns:
+            Dictionary mapping ISIN to ticker symbol (or None if not found)
+        """
+        results = {}
+        
+        for i, isin in enumerate(isins):
+            logger.info(f"Processing ISIN {i+1}/{len(isins)}: {isin}")
+            results[isin] = self.get_ticker_from_isin(isin)
         
         return results
     
@@ -299,11 +393,55 @@ class OpenFIGIClient:
         
         return df
     
+    def add_tickers_to_dataframe_by_isin(self, df: pd.DataFrame, isin_column: str = 'isin') -> pd.DataFrame:
+        """
+        Add ticker symbols to a pandas DataFrame containing ISIN identifiers.
+        
+        Args:
+            df: DataFrame with ISIN column
+            isin_column: Name of the column containing ISIN identifiers
+            
+        Returns:
+            DataFrame with added 'ticker' column
+        """
+        if isin_column not in df.columns:
+            logger.warning(f"Column '{isin_column}' not found in DataFrame")
+            df['ticker'] = None
+            return df
+        
+        logger.info(f"Adding ticker symbols for {len(df)} holdings using ISINs...")
+        
+        # Get unique ISINs to avoid duplicate API calls, filtering out NaN values
+        unique_isins = df[isin_column].dropna().unique()
+        # Filter out non-string values that might be floats
+        unique_isins = [isin for isin in unique_isins if isinstance(isin, str)]
+        logger.info(f"Found {len(unique_isins)} unique ISINs")
+        
+        # Get ticker mappings for unique ISINs
+        ticker_mappings = self.get_multiple_tickers_from_isins(unique_isins)
+        
+        # Map tickers to DataFrame
+        df['ticker'] = df[isin_column].map(ticker_mappings)
+        
+        # Report results
+        found_tickers = df['ticker'].notna().sum()
+        success_rate = found_tickers / len(df) * 100
+        logger.info(f"Found tickers for {found_tickers}/{len(df)} holdings ({success_rate:.1f}%)")
+        
+        # Log ISINs that couldn't be found
+        missing_tickers = df[df['ticker'].isna()]
+        if not missing_tickers.empty:
+            unique_missing_isins = missing_tickers[isin_column].dropna().unique()
+            logger.warning(f"Could not find tickers for {len(unique_missing_isins)} ISINs: {list(unique_missing_isins)}")
+        
+        return df
+    
     def get_cache_stats(self) -> Dict[str, int]:
         """Get cache statistics."""
         total_cached = len(self.cache)
-        found_cached = sum(1 for ticker in self.cache.values() if ticker is not None)
-        not_found_cached = total_cached - found_cached
+        # Since we no longer cache null values, all cached entries are successful
+        found_cached = total_cached
+        not_found_cached = 0
         
         return {
             'total_cached': total_cached,
