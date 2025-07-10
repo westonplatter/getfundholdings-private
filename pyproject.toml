@@ -11,6 +11,7 @@ dependencies = [
     "loguru>=0.7.3",
     "pytest>=7.4.0",
     "pandas>=2.3.0",
+    "pandera>=0.25.0",
 ]
 
 [build-system]
@@ -25,3 +26,6 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+markers = [
+    "integration: marks tests as integration tests (deselect with '-m \"not integration\"')"
+]

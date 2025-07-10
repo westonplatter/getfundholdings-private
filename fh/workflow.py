@@ -8,6 +8,7 @@ CIK → Series/Class → N-PORT Filings → XML Data → Holdings → Enriched D
 
 import time
 import os
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from loguru import logger
 import pandas as pd
@@ -151,20 +152,25 @@ class FundHoldingsWorkflow:
             
             # Step 4: Extract holdings data
             logger.info(f"Step 4: Extracting holdings data from {len(xml_files)} XML files")
-            holdings_file = self._extract_holdings_data(cik, xml_files)
-            if holdings_file:
+            holdings_files = self._extract_holdings_data(cik, xml_files)
+            if holdings_files:
                 result["steps_completed"].append("holdings_extraction")
-                result["output_files"].append(holdings_file)
-                result["holdings_file"] = holdings_file
+                result["output_files"].extend(holdings_files)
+                result["holdings_files"] = holdings_files
                 
                 # Step 5: Enrich with ticker data (if enabled)
                 if self.config.enable_ticker_enrichment and self.openfigi_client:
                     logger.info(f"Step 5: Enriching holdings with ticker data")
-                    enriched_file = self._enrich_with_tickers(holdings_file, cik)
-                    if enriched_file:
+                    enriched_files = []
+                    for holdings_file in holdings_files:
+                        enriched_file = self._enrich_with_tickers(holdings_file, cik, series_ids)
+                        if enriched_file:
+                            enriched_files.append(enriched_file)
+                    
+                    if enriched_files:
                         result["steps_completed"].append("ticker_enrichment")
-                        result["output_files"].append(enriched_file)
-                        result["enriched_file"] = enriched_file
+                        result["output_files"].extend(enriched_files)
+                        result["enriched_files"] = enriched_files
             
             result["success"] = True
             result["execution_time"] = time.time() - start_time
@@ -217,14 +223,15 @@ class FundHoldingsWorkflow:
         
         return xml_files
     
-    def _extract_holdings_data(self, cik: str, xml_files: List[str]) -> Optional[str]:
-        """Extract holdings data from XML files and combine into single CSV."""
+    def _extract_holdings_data(self, cik: str, xml_files: List[str]) -> List[str]:
+        """Extract holdings data from XML files and save individual CSV files."""
+        holdings_files = []
+        
         try:
             # Import here to avoid circular imports
             from parse_nport import parse_nport_file
             
-            all_holdings = []
-            all_fund_info = []
+            current_date_str = datetime.now().strftime("%Y-%m-%d-%H%M%S")
             
             for xml_file in xml_files:
                 try:
@@ -233,50 +240,99 @@ class FundHoldingsWorkflow:
                         if not holdings_df.empty:
                             # Add source file info
                             holdings_df['source_file'] = os.path.basename(xml_file)
-                            all_holdings.append(holdings_df)
-                            all_fund_info.append(fund_info)
+                            
+                            # Extract fund info for filename
+                            series_id = fund_info.get('series_id', 'unknown')
+                            report_date = fund_info.get('report_period_date', 'unknown')
+                            
+                            # Format report date if it's available
+                            if report_date and report_date != 'unknown':
+                                try:
+                                    # Assuming report_date is in YYYY-MM-DD format already
+                                    # If not, you might need to parse and reformat it
+                                    report_date_str = report_date
+                                except:
+                                    report_date_str = 'unknown'
+                            else:
+                                report_date_str = 'unknown'
+                            
+                            # Create filename
+                            holdings_file = os.path.join(
+                                self.config.data_dir, 
+                                f"holdings_{cik}_{series_id}_{report_date_str}_{current_date_str}.csv"
+                            )
+                            
+                            # Save individual holdings file
+                            holdings_df.to_csv(holdings_file, index=False, quoting=1)  # QUOTE_ALL
+                            holdings_files.append(holdings_file)
+                            
+                            logger.info(f"Saved {len(holdings_df)} holdings to {holdings_file}")
+                            
                 except Exception as e:
                     logger.warning(f"Failed to parse {xml_file}: {e}")
             
-            if all_holdings:
-                # Combine all holdings
-                combined_holdings = pd.concat(all_holdings, ignore_index=True)
-                
-                # Save combined holdings
-                timestamp = int(time.time())
-                holdings_file = os.path.join(self.config.data_dir, f"holdings_{cik}_{timestamp}.csv")
-                combined_holdings.to_csv(holdings_file, index=False, quoting=1)  # QUOTE_ALL
-                
-                logger.info(f"Saved {len(combined_holdings)} holdings to {holdings_file}")
-                return holdings_file
+            logger.info(f"Created {len(holdings_files)} holdings files")
+            return holdings_files
                 
         except Exception as e:
             logger.error(f"Failed to extract holdings data: {e}")
         
-        return None
-    
-    def _enrich_with_tickers(self, holdings_file: str, cik: str) -> Optional[str]:
+        return []
+
+    def _enrich_with_tickers(self, holdings_file: str, cik: str, series_ids: List[str]) -> Optional[str]:
         """Enrich holdings data with ticker symbols using both CUSIP and ISIN lookups."""
         try:
             # Load holdings data
             holdings_df = pd.read_csv(holdings_file)
+            
+            # Extract report date and series_id from filename
+            # Format: holdings_{cik}_{series_id}_{report_date}_{current_datetime}.csv
+            filename = os.path.basename(holdings_file)
+            filename_parts = filename.replace('.csv', '').split('_')
+            
+            if len(filename_parts) >= 4:
+                report_date = filename_parts[3]  # The report date part
+                series_id = filename_parts[2]    # The series ID part
+            else:
+                report_date = 'unknown'
+                series_id = 'unknown'
+            
+            # Add report date column if it doesn't exist
+            if 'report_period_date' not in holdings_df.columns:
+                holdings_df['report_period_date'] = report_date
+
+            # Create enriched dataframe with no tickers
+            enriched_df = holdings_df.copy()
+            enriched_df['ticker'] = None
+            
+            # Add enrichment datetime in UTC (timezone-aware)
+            enrichment_datetime_utc = datetime.now(timezone.utc)
+            enriched_df['enrichment_datetime'] = enrichment_datetime_utc
+
             logger.info(f"Starting ticker enrichment for {len(holdings_df)} holdings")
+
+            # Step 1: Use ISIN to lookup tickers
+            missing_ticker_mask = enriched_df['ticker'].isna()
+            missing_ticker_count = missing_ticker_mask.sum()
             
-            # Step 1: Try CUSIP lookup first
-            logger.info("Step 1: Attempting ticker lookup via CUSIP")
-            enriched_df = self.openfigi_client.add_tickers_to_dataframe(holdings_df, cusip_column='cusip')
+            # Step 1: Use CUSIP to lookup tickers
+            if missing_ticker_count > 0 and 'cusip' in [col.lower() for col in enriched_df.columns]:
+                logger.info("Step 1: Attempting ticker lookup via CUSIP")
+                enriched_df = self.openfigi_client.add_tickers_to_dataframe_by_cusip(enriched_df, cusip_column='cusip')
+            else:
+                logger.info("Step 1: No CUSIP column found, skipping CUSIP lookup")
             
-            # Step 2: For failed CUSIP lookups, try ISIN lookup
-            failed_cusip_mask = enriched_df['ticker'].isna()
-            failed_cusip_count = failed_cusip_mask.sum()
+            # Step 2: Use ISIN to lookup tickers
+            missing_ticker_mask = enriched_df['ticker'].isna()
+            missing_ticker_count = missing_ticker_mask.sum()
             
-            if failed_cusip_count > 0 and 'isin' in enriched_df.columns:
-                logger.info(f"Step 2: {failed_cusip_count} holdings failed CUSIP lookup, trying ISIN lookup")
+            if missing_ticker_count > 0 and 'isin' in [col.lower() for col in enriched_df.columns]:
+                logger.info(f"Step 2: {missing_ticker_count} holdings missing tickers, trying ISIN lookup")
                 
                 # Get holdings that failed CUSIP lookup but have ISINs
-                failed_cusip_holdings = enriched_df[failed_cusip_mask].copy()
-                has_isin_mask = (failed_cusip_holdings['isin'].notna()) & (failed_cusip_holdings['isin'] != '')
-                isin_candidates = failed_cusip_holdings[has_isin_mask]
+                missing_ticker_holdings = enriched_df[missing_ticker_mask].copy()
+                has_isin_mask = (missing_ticker_holdings['isin'].notna()) & (missing_ticker_holdings['isin'] != '')
+                isin_candidates = missing_ticker_holdings[has_isin_mask]
                 
                 if not isin_candidates.empty:
                     logger.info(f"Found {len(isin_candidates)} holdings with ISINs to try")
@@ -298,21 +354,24 @@ class FundHoldingsWorkflow:
                             enriched_df.loc[idx, 'ticker'] = successful_isin_lookups.loc[idx, 'ticker']
                 else:
                     logger.info("No holdings with valid ISINs found for fallback lookup")
-            elif failed_cusip_count > 0:
-                logger.info(f"{failed_cusip_count} holdings failed CUSIP lookup, but no ISIN column available")
+            elif missing_ticker_count > 0:
+                logger.info(f"{missing_ticker_count} holdings missing tickers, but no ISIN column available")
             
             # Final summary
-            total_with_tickers = enriched_df['ticker'].notna().sum()
-            total_without_tickers = len(enriched_df) - total_with_tickers
-            success_rate = total_with_tickers / len(enriched_df) * 100 if len(enriched_df) > 0 else 0
+            missing_ticker_mask = enriched_df['ticker'].isna()
+            missing_ticker_count = missing_ticker_mask.sum()
+            success_rate = (len(enriched_df) - missing_ticker_count) / len(enriched_df) * 100 if len(enriched_df) > 0 else 0
             
-            logger.info(f"Ticker enrichment complete: {total_with_tickers}/{len(enriched_df)} holdings have tickers ({success_rate:.1f}%)")
-            if total_without_tickers > 0:
-                logger.warning(f"{total_without_tickers} holdings still missing tickers after both CUSIP and ISIN lookup attempts")
+            logger.info(f"Ticker enrichment complete: {len(enriched_df) - missing_ticker_count}/{len(enriched_df)} holdings have tickers ({success_rate:.1f}%)")
+            if missing_ticker_count > 0:
+                logger.warning(f"{missing_ticker_count} holdings still missing tickers after both CUSIP and ISIN lookup attempts")
+
+                for idx, row in enriched_df[missing_ticker_mask].iterrows():
+                    logger.warning(f"  - {row['name']}/{row['title']}- ISIN: {row['isin']}, CUSIP: {row['cusip']}")
             
             # Save enriched data
-            timestamp = int(time.time())
-            enriched_file = os.path.join(self.config.data_dir, f"holdings_enriched_{cik}_{timestamp}.csv")
+            date_str = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+            enriched_file = os.path.join(self.config.data_dir, f"holdings_enriched_{cik}_{series_id}_{report_date}_{date_str}.csv")
             enriched_df.to_csv(enriched_file, index=False, quoting=1)  # QUOTE_ALL
             
             logger.info(f"Saved enriched holdings to {enriched_file}")
@@ -326,11 +385,21 @@ class FundHoldingsWorkflow:
 
 def main():
     """Example usage of the workflow."""
+    # config = WorkflowConfig(
+    #     # cik_list=["1100663"],  # iShares
+    #     cik_list=["0001485894"],  # iShares
+    #     enable_ticker_enrichment=True,
+    #     max_series_per_cik=1,
+    #     max_filings_per_series=1,
+    #     # interested_etf_tickers=["IVV"]
+    #     interested_etf_tickers=["JEPI"]
+    # )
+
     config = WorkflowConfig(
         cik_list=["1100663"],  # iShares
         enable_ticker_enrichment=True,
         max_series_per_cik=1,
-        max_filings_per_series=1,
+        max_filings_per_series=7,
         interested_etf_tickers=["IVV"]
     )
     

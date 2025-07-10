@@ -57,7 +57,7 @@ The pipeline implements **dual-identifier ticker lookup** via OpenFIGI API:
 **Enhancement Logic:**
 ```python
 # Step 1: CUSIP lookup (US domestic securities)
-enriched_df = openfigi_client.add_tickers_to_dataframe(holdings_df, 'cusip')
+enriched_df = openfigi_client.add_tickers_to_dataframe_by_cusip(holdings_df, 'cusip')
 
 # Step 2: ISIN fallback (international securities traded on US exchanges)
 failed_cusip_holdings = enriched_df[enriched_df['ticker'].isna()]

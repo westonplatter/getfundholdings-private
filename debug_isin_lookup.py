@@ -122,11 +122,12 @@ def main():
     
     # Known US stock ISINs for validation
     validation_isins = [
-        "US0378331005",  # Apple Inc (AAPL)
-        "US5949181045",  # Microsoft Corp (MSFT)
-        "US6174464486",  # NVIDIA Corp (NVDA)
-        "US02079K3059",  # Alphabet Inc Class A (GOOGL)
-        "US0231351067",  # Amazon.com Inc (AMZN)
+        # "US0378331005",  # Apple Inc (AAPL)
+        # "US5949181045",  # Microsoft Corp (MSFT)
+        # "US6174464486",  # NVIDIA Corp (NVDA)
+        # "US02079K3059",  # Alphabet Inc Class A (GOOGL)
+        # "US0231351067",  # Amazon.com Inc (AMZN)
+        "US09247X1019",
     ]
     
     print("\n" + "="*80)
@@ -140,73 +141,73 @@ def main():
     for isin in validation_isins[:3]:  # Test first 3 to avoid hitting rate limits
         test_single_isin(client, isin)
     
-    # Test 2: Single ISIN lookups with problematic holdings
-    print("\n📋 Test 2: International Holdings from Your Data")
-    print("-" * 50)
+#     # Test 2: Single ISIN lookups with problematic holdings
+#     print("\n📋 Test 2: International Holdings from Your Data")
+#     print("-" * 50)
     
-    # Test a few key ones individually
-    key_test_isins = [
-        "IE00B8KQN827",  # Eaton Corp. plc  
-        "CH0044328745",  # Chubb Ltd.
-        "IE00B4BNMY34",  # Accenture plc
-        "IE000S9YS762",  # Linde plc
-        "IE00BTN1Y115",  # Medtronic plc
-    ]
+#     # Test a few key ones individually
+#     key_test_isins = [
+#         "IE00B8KQN827",  # Eaton Corp. plc  
+#         "CH0044328745",  # Chubb Ltd.
+#         "IE00B4BNMY34",  # Accenture plc
+#         "IE000S9YS762",  # Linde plc
+#         "IE00BTN1Y115",  # Medtronic plc
+#     ]
     
-    for isin in key_test_isins:
-        test_single_isin(client, isin)
+#     for isin in key_test_isins:
+#         test_single_isin(client, isin)
     
-    # Test 3: Batch lookup test
-    print("\n📋 Test 3: Batch Lookup (First 10 ISINs)")
-    print("-" * 50)
+#     # Test 3: Batch lookup test
+#     print("\n📋 Test 3: Batch Lookup (First 10 ISINs)")
+#     print("-" * 50)
     
-    batch_test_isins = test_isins[:10]  # First 10 to avoid rate limits
-    batch_results = test_batch_isins(client, batch_test_isins)
+#     batch_test_isins = test_isins[:10]  # First 10 to avoid rate limits
+#     batch_results = test_batch_isins(client, batch_test_isins)
     
-    # Test 4: DataFrame integration test
-    print("\n📋 Test 4: DataFrame Integration Test")
-    print("-" * 50)
+#     # Test 4: DataFrame integration test
+#     print("\n📋 Test 4: DataFrame Integration Test")
+#     print("-" * 50)
     
-    df_test_isins = key_test_isins  # Use the key ones for DataFrame test
-    enriched_df = test_dataframe_integration(client, df_test_isins)
+#     df_test_isins = key_test_isins  # Use the key ones for DataFrame test
+#     enriched_df = test_dataframe_integration(client, df_test_isins)
     
-    # Test 5: Cache statistics
-    print("\n📋 Test 5: Cache Performance")
-    print("-" * 50)
+#     # Test 5: Cache statistics
+#     print("\n📋 Test 5: Cache Performance")
+#     print("-" * 50)
     
-    cache_stats = client.get_cache_stats()
-    logger.info(f"Cache statistics:")
-    logger.info(f"  Total cached: {cache_stats['total_cached']}")
-    logger.info(f"  Found cached: {cache_stats['found_cached']}")
-    logger.info(f"  Not found cached: {cache_stats['not_found_cached']}")
+#     cache_stats = client.get_cache_stats()
+#     logger.info(f"Cache statistics:")
+#     logger.info(f"  Total cached: {cache_stats['total_cached']}")
+#     logger.info(f"  Found cached: {cache_stats['found_cached']}")
+#     logger.info(f"  Not found cached: {cache_stats['not_found_cached']}")
     
-    print("\n" + "="*80)
-    print("✅ Debug session complete!")
-    print("="*80)
+#     print("\n" + "="*80)
+#     print("✅ Debug session complete!")
+#     print("="*80)
     
-    # Interactive mode
-    print("\n🔍 Interactive Mode")
-    print("Enter ISINs to test (or 'quit' to exit):")
+#     # Interactive mode
+#     print("\n🔍 Interactive Mode")
+#     print("Enter ISINs to test (or 'quit' to exit):")
     
-    while True:
-        try:
-            user_input = input("\nISIN> ").strip()
+#     while True:
+#         try:
+#             user_input = input("\nISIN> ").strip()
             
-            if user_input.lower() in ['quit', 'exit', 'q']:
-                break
+#             if user_input.lower() in ['quit', 'exit', 'q']:
+#                 break
             
-            if user_input:
-                if len(user_input) == 12 and user_input.isalnum():
-                    test_single_isin(client, user_input.upper())
-                else:
-                    print("❌ Invalid ISIN format. ISINs should be 12 alphanumeric characters.")
+#             if user_input:
+#                 if len(user_input) == 12 and user_input.isalnum():
+#                     test_single_isin(client, user_input.upper())
+#                 else:
+#                     print("❌ Invalid ISIN format. ISINs should be 12 alphanumeric characters.")
             
-        except KeyboardInterrupt:
-            break
-        except Exception as e:
-            logger.error(f"Error testing ISIN: {e}")
+#         except KeyboardInterrupt:
+#             break
+#         except Exception as e:
+#             logger.error(f"Error testing ISIN: {e}")
     
-    print("\n👋 Goodbye!")
+#     print("\n👋 Goodbye!")
 
 
 if __name__ == "__main__":

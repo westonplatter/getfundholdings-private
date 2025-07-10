@@ -10,7 +10,7 @@ import xml.etree.ElementTree as ET
 import pandas as pd
 from typing import Dict, List, Any, Optional
 import os
-from loguru import logger
+from fh.schemas import HoldingsRawDF, validate_holdings_raw
 
 
 class NPortParser:
@@ -164,7 +164,7 @@ class NPortParser:
         
         return holdings
     
-    def to_dataframes(self) -> tuple[pd.DataFrame, Dict[str, Any]]:
+    def to_dataframes(self) -> tuple[HoldingsRawDF, Dict[str, Any]]:
         """Parse XML and return holdings DataFrame and fund info dict"""
         if not self.load_xml():
             return pd.DataFrame(), {}
@@ -175,40 +175,10 @@ class NPortParser:
         # Convert holdings to DataFrame
         holdings_df = pd.DataFrame(holdings_data)
         
-        # Check for missing CUSIPs and log warnings
+        # Add metadata columns required by schema
         if not holdings_df.empty:
-            missing_cusip_mask = (holdings_df['cusip'].isna()) | (holdings_df['cusip'] == '') | (holdings_df['cusip'] == 'N/A')
-            missing_count = missing_cusip_mask.sum()
-            total_count = len(holdings_df)
-            
-            if missing_count > 0:
-                logger.warning(f"Found {missing_count}/{total_count} holdings ({missing_count/total_count*100:.1f}%) with missing CUSIPs")
-                
-                # Check how many have ISINs as alternative
-                missing_holdings = holdings_df[missing_cusip_mask]
-                has_isin_mask = (missing_holdings['isin'].notna()) & (missing_holdings['isin'] != '')
-                isin_available_count = has_isin_mask.sum()
-                
-                if isin_available_count > 0:
-                    logger.info(f"Alternative: {isin_available_count}/{missing_count} holdings with missing CUSIPs have ISINs available for ticker lookup")
-                
-                # Log details about holdings with missing CUSIPs
-                logger.warning(f"Holdings missing CUSIPs (ISIN available for ticker lookup):")
-                for idx, row in missing_holdings.iterrows():
-                    # Show name, value, and alternative identifiers
-                    name = row.get('name', 'Unknown')[:50]  # Truncate long names
-                    value = row.get('value_usd', 0)
-                    # Convert value to float for formatting, handle potential string values
-                    try:
-                        value_num = float(value) if value else 0
-                        value_str = f"${value_num:,.0f}"
-                    except (ValueError, TypeError):
-                        value_str = f"${str(value)}"
-                    
-                    isin = row.get('isin', '')
-                    other_id = row.get('other_id', '')
-                    isin_indicator = "✓" if isin else "✗"
-                    logger.warning(f"  - {name} ({value_str}) - ISIN: {isin} {isin_indicator}, Other: {other_id}")
+            holdings_df['source_file'] = os.path.basename(self.xml_file_path)
+            holdings_df['report_period_date'] = fund_info.get('report_period_date', '')
         
         # Convert numeric columns
         numeric_columns = ['balance', 'value_usd', 'percent_value', 'loan_value']
@@ -225,10 +195,14 @@ class NPortParser:
                 except (ValueError, TypeError):
                     fund_info[col] = None
         
+        # Validate holdings DataFrame against schema
+        if not holdings_df.empty:
+            holdings_df = validate_holdings_raw(holdings_df)
+        
         return holdings_df, fund_info
 
 
-def parse_nport_file(xml_file_path: str) -> tuple[pd.DataFrame, Dict[str, Any]]:
+def parse_nport_file(xml_file_path: str) -> tuple[HoldingsRawDF, Dict[str, Any]]:
     """
     Parse an N-PORT XML file and return holdings DataFrame and fund info
     
@@ -236,7 +210,7 @@ def parse_nport_file(xml_file_path: str) -> tuple[pd.DataFrame, Dict[str, Any]]:
         xml_file_path: Path to the N-PORT XML file
         
     Returns:
-        tuple: (holdings_df, fund_info_dict)
+        tuple: (validated holdings_df conforming to HoldingsRawSchema, fund_info_dict)
     """
     parser = NPortParser(xml_file_path)
     return parser.to_dataframes()
@@ -268,10 +242,6 @@ def main():
         print(f"\nTop 10 holdings by value:")
         top_holdings = holdings_df.nlargest(10, 'value_usd')[['name', 'value_usd', 'percent_value']]
         print(top_holdings)
-
-    import pdb; pdb.set_trace()
-
-    x = 1
 
 
 if __name__ == "__main__":

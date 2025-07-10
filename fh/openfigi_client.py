@@ -182,7 +182,7 @@ class OpenFIGIClient:
         
         # Check cache first
         if cusip in self.cache:
-            logger.debug(f"Cache hit for CUSIP {cusip}: {self.cache[cusip]}")
+            # logger.debug(f"Cache hit for CUSIP {cusip}: {self.cache[cusip]}")
             return self.cache[cusip]
         
         # Make API request
@@ -211,7 +211,6 @@ class OpenFIGIClient:
         
         # Check cache first
         if isin in self.cache:
-            logger.debug(f"Cache hit for ISIN {isin}: {self.cache[isin]}")
             return self.cache[isin]
         
         # Make API request
@@ -314,7 +313,7 @@ class OpenFIGIClient:
             logger.error(f"Unexpected error fetching ticker for ISIN {isin}: {e}")
             return None
     
-    def get_multiple_tickers(self, cusips: List[str]) -> Dict[str, Optional[str]]:
+    def get_multiple_tickers_from_cusips(self, cusips: List[str]) -> Dict[str, Optional[str]]:
         """
         Get ticker symbols for multiple CUSIP identifiers.
         
@@ -327,7 +326,7 @@ class OpenFIGIClient:
         results = {}
         
         for i, cusip in enumerate(cusips):
-            logger.info(f"Processing CUSIP {i+1}/{len(cusips)}: {cusip}")
+            # logger.info(f"Processing CUSIP {i+1}/{len(cusips)}: {cusip}")
             results[cusip] = self.get_ticker_from_cusip(cusip)
         
         return results
@@ -345,12 +344,12 @@ class OpenFIGIClient:
         results = {}
         
         for i, isin in enumerate(isins):
-            logger.info(f"Processing ISIN {i+1}/{len(isins)}: {isin}")
+            # logger.info(f"Processing ISIN {i+1}/{len(isins)}: {isin}")
             results[isin] = self.get_ticker_from_isin(isin)
         
         return results
     
-    def add_tickers_to_dataframe(self, df: pd.DataFrame, cusip_column: str = 'cusip') -> pd.DataFrame:
+    def add_tickers_to_dataframe_by_cusip(self, df: pd.DataFrame, cusip_column: str = 'cusip') -> pd.DataFrame:
         """
         Add ticker symbols to a pandas DataFrame containing CUSIP identifiers.
         
@@ -361,12 +360,15 @@ class OpenFIGIClient:
         Returns:
             DataFrame with added 'ticker' column
         """
+        # Create a copy to avoid SettingWithCopyWarning
+        df = df.copy()
+        
         if cusip_column not in df.columns:
             logger.warning(f"Column '{cusip_column}' not found in DataFrame")
             df['ticker'] = None
             return df
         
-        logger.info(f"Adding ticker symbols for {len(df)} holdings...")
+        logger.info(f"Adding ticker symbols by CUSIP for {len(df)} holdings...")
         
         # Get unique CUSIPs to avoid duplicate API calls, filtering out NaN values
         unique_cusips = df[cusip_column].dropna().unique()
@@ -375,7 +377,7 @@ class OpenFIGIClient:
         logger.info(f"Found {len(unique_cusips)} unique CUSIPs")
         
         # Get ticker mappings for unique CUSIPs
-        ticker_mappings = self.get_multiple_tickers(unique_cusips)
+        ticker_mappings = self.get_multiple_tickers_from_cusips(unique_cusips)
         
         # Map tickers to DataFrame
         df['ticker'] = df[cusip_column].map(ticker_mappings)
@@ -404,12 +406,15 @@ class OpenFIGIClient:
         Returns:
             DataFrame with added 'ticker' column
         """
+        # Create a copy to avoid SettingWithCopyWarning
+        df = df.copy()
+        
         if isin_column not in df.columns:
             logger.warning(f"Column '{isin_column}' not found in DataFrame")
             df['ticker'] = None
             return df
         
-        logger.info(f"Adding ticker symbols for {len(df)} holdings using ISINs...")
+        logger.info(f"Adding ticker symbols by ISIN for {len(df)} holdings...")
         
         # Get unique ISINs to avoid duplicate API calls, filtering out NaN values
         unique_isins = df[isin_column].dropna().unique()
@@ -522,7 +527,7 @@ def main():
     
     # Add ticker symbols
     logger.info("Adding ticker symbols to top holdings...")
-    top_holdings_with_tickers = client.add_tickers_to_dataframe(top_holdings)
+    top_holdings_with_tickers = client.add_tickers_to_dataframe_by_cusip(top_holdings)
     
     # Display results
     logger.info(f"\nTop 20 Holdings with Tickers:")
