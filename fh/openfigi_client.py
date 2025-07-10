@@ -70,7 +70,7 @@ class OpenFIGIClient:
         
         if time_since_last < self.min_interval:
             sleep_time = self.min_interval - time_since_last
-            logger.info(f"Rate limiting: waiting {sleep_time:.1f} seconds...")
+            logger.debug(f"Rate limiting: waiting {sleep_time:.1f} seconds...")
             time.sleep(sleep_time)
         
         self.last_request_time = time.time()
@@ -98,7 +98,7 @@ class OpenFIGIClient:
                 # Log request for debugging
                 # logger.debug(f"Making request to {url} (attempt {attempt + 1})")
                 if attempt == 0:
-                    logger.info(f"Making request to {url}")
+                    logger.debug(f"Making request to {url}")
                 else:
                     logger.debug(f"Making request to {url} (attempt {attempt + 1})")
                 
