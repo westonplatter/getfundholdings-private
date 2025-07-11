@@ -6,7 +6,7 @@ from fh.sec_client import SECHTTPClient
 CIK_MAP = {
     # fund issuer => cik
     "ishares": "1100663",
-    "jpmorgan": "1485894",
+    "jpmorgan": "0001485894",
 }
 
 def download_series_data(client, cik):
