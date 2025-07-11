@@ -5,8 +5,6 @@ This test fetches live data from SEC and stores it as a fixture for future testi
 """
 
 import json
-import os
-import sys
 import pytest
 from datetime import datetime
 from pathlib import Path
@@ -27,6 +25,7 @@ class TestFetchSeriesData:
         """Test CIK for iShares Trust"""
         return "1100663"
     
+    @pytest.mark.live
     def test_fetch_series_data_live_and_store(self, sec_client, test_cik):
         """
         Test fetch_series_data with live SEC data and store results as fixture.
@@ -143,6 +142,7 @@ class TestFetchSeriesData:
         
         # Test functions should not return values
     
+    @pytest.mark.live
     def test_series_data_structure_validation(self, sec_client, test_cik):
         """
         Test that validates the expected structure of series data.

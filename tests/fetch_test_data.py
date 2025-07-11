@@ -5,19 +5,22 @@ Run this once to get the test data, then use it in tests.
 
 import json
 from datetime import datetime
+from loguru import logger
+
 from fh.sec_client import SECHTTPClient
 
+
 def main():
-    print("Fetching live SEC series data for testing...")
+    logger.info("Fetching live SEC series data for testing...")
     
     # Initialize client and fetch data
     client = SECHTTPClient()
     cik = "1100663"
     
-    print(f"Fetching series data for CIK: {cik}")
+    logger.info(f"Fetching series data for CIK: {cik}")
     series_data = client.fetch_series_data(cik)
     
-    print(f"Fetched {len(series_data)} series records")
+    logger.info(f"Fetched {len(series_data)} series records")
     
     # Save to test data file
     test_data = {
@@ -34,8 +37,8 @@ def main():
     with open(filename, 'w') as f:
         json.dump(test_data, f, indent=2, default=str)
     
-    print(f"✓ Saved test data to: {filename}")
-    print(f"✓ Ready for testing!")
+    logger.info(f"✓ Saved test data to: {filename}")
+    logger.info(f"✓ Ready for testing!")
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()
