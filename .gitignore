@@ -11,3 +11,12 @@ wheels/
 
 *.csv
 *.json
+
+
+# R2
+.r2/
+
+.env*
+
+# Data
+data/

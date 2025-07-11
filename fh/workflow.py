@@ -143,6 +143,9 @@ class FundHoldingsWorkflow:
             result["output_files"].extend(filings_files)
             result["total_filings"] = total_filings
             
+            # Create series_id to ticker mapping
+            series_ticker_map = self._create_series_ticker_mapping(series_data)
+            
             # Step 3: Download N-PORT XML files
             logger.info(f"Step 3: Downloading N-PORT XML files for {total_filings} filings")
             xml_files = self._download_nport_xmls(cik, series_ids)
@@ -152,7 +155,7 @@ class FundHoldingsWorkflow:
             
             # Step 4: Extract holdings data
             logger.info(f"Step 4: Extracting holdings data from {len(xml_files)} XML files")
-            holdings_files = self._extract_holdings_data(cik, xml_files)
+            holdings_files = self._extract_holdings_data(cik, xml_files, series_ticker_map)
             if holdings_files:
                 result["steps_completed"].append("holdings_extraction")
                 result["output_files"].extend(holdings_files)
@@ -163,7 +166,7 @@ class FundHoldingsWorkflow:
                     logger.info(f"Step 5: Enriching holdings with ticker data")
                     enriched_files = []
                     for holdings_file in holdings_files:
-                        enriched_file = self._enrich_with_tickers(holdings_file, cik, series_ids)
+                        enriched_file = self._enrich_with_tickers(holdings_file, cik, series_ticker_map)
                         if enriched_file:
                             enriched_files.append(enriched_file)
                     
@@ -194,6 +197,25 @@ class FundHoldingsWorkflow:
         
         return list(set(series_ids))  # Remove duplicates
     
+    def _create_series_ticker_mapping(self, series_data: List[Dict]) -> Dict[str, str]:
+        """Create mapping from series_id to fund ticker from series data."""
+        series_ticker_map = {}
+        
+        for series in series_data:
+            series_id = series.get('series_id', '')
+            if series_id and series_id.startswith('S') and len(series_id) > 5:
+                # Look for ticker in the classes
+                classes = series.get('classes', [])
+                for class_info in classes:
+                    ticker = class_info.get('ticker', '')
+                    if ticker:
+                        series_ticker_map[series_id] = ticker
+                        logger.debug(f"Mapped series {series_id} to ticker {ticker}")
+                        break  # Use the first ticker found for this series
+        
+        logger.info(f"Created series to ticker mapping for {len(series_ticker_map)} series")
+        return series_ticker_map
+    
     def _download_nport_xmls(self, cik: str, series_ids: List[str]) -> List[str]:
         """Download N-PORT XML files for all series."""
         xml_files = []
@@ -223,7 +245,7 @@ class FundHoldingsWorkflow:
         
         return xml_files
     
-    def _extract_holdings_data(self, cik: str, xml_files: List[str]) -> List[str]:
+    def _extract_holdings_data(self, cik: str, xml_files: List[str], series_ticker_map: Dict[str, str]) -> List[str]:
         """Extract holdings data from XML files and save individual CSV files."""
         holdings_files = []
         
@@ -231,42 +253,47 @@ class FundHoldingsWorkflow:
             # Import here to avoid circular imports
             from parse_nport import parse_nport_file
             
-            current_date_str = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+            current_date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
             
             for xml_file in xml_files:
                 try:
                     if os.path.exists(xml_file):
                         holdings_df, fund_info = parse_nport_file(xml_file)
                         if not holdings_df.empty:
-                            # Add source file info
-                            holdings_df['source_file'] = os.path.basename(xml_file)
-                            
                             # Extract fund info for filename
                             series_id = fund_info.get('series_id', 'unknown')
                             report_date = fund_info.get('report_period_date', 'unknown')
+                            
+                            # Get fund ticker from mapping
+                            fund_ticker = series_ticker_map.get(series_id, 'unknown')
+                            
+                            # Add metadata columns
+                            holdings_df['source_file'] = os.path.basename(xml_file)
+                            holdings_df['fund_ticker'] = fund_ticker
+                            holdings_df['series_id'] = series_id
                             
                             # Format report date if it's available
                             if report_date and report_date != 'unknown':
                                 try:
                                     # Assuming report_date is in YYYY-MM-DD format already
                                     # If not, you might need to parse and reformat it
-                                    report_date_str = report_date
+                                    report_date_str = report_date.replace('-', '')  # Remove dashes for filename
                                 except:
                                     report_date_str = 'unknown'
                             else:
                                 report_date_str = 'unknown'
                             
-                            # Create filename
+                            # Create filename with fund ticker
                             holdings_file = os.path.join(
                                 self.config.data_dir, 
-                                f"holdings_{cik}_{series_id}_{report_date_str}_{current_date_str}.csv"
+                                f"holdings_{fund_ticker}_{cik}_{series_id}_{report_date_str}_{current_date_str}.csv"
                             )
                             
                             # Save individual holdings file
                             holdings_df.to_csv(holdings_file, index=False, quoting=1)  # QUOTE_ALL
                             holdings_files.append(holdings_file)
                             
-                            logger.info(f"Saved {len(holdings_df)} holdings to {holdings_file}")
+                            logger.info(f"Saved {len(holdings_df)} holdings for {fund_ticker} to {holdings_file}")
                             
                 except Exception as e:
                     logger.warning(f"Failed to parse {xml_file}: {e}")
@@ -279,23 +306,26 @@ class FundHoldingsWorkflow:
         
         return []
 
-    def _enrich_with_tickers(self, holdings_file: str, cik: str, series_ids: List[str]) -> Optional[str]:
+    def _enrich_with_tickers(self, holdings_file: str, cik: str, series_ticker_map: Dict[str, str]) -> Optional[str]:
         """Enrich holdings data with ticker symbols using both CUSIP and ISIN lookups."""
         try:
             # Load holdings data
             holdings_df = pd.read_csv(holdings_file)
             
-            # Extract report date and series_id from filename
-            # Format: holdings_{cik}_{series_id}_{report_date}_{current_datetime}.csv
+            # Extract fund ticker, report date and series_id from filename
+            # Format: holdings_{fund_ticker}_{cik}_{series_id}_{report_date}_{current_datetime}.csv
             filename = os.path.basename(holdings_file)
             filename_parts = filename.replace('.csv', '').split('_')
             
-            if len(filename_parts) >= 4:
-                report_date = filename_parts[3]  # The report date part
-                series_id = filename_parts[2]    # The series ID part
+            if len(filename_parts) >= 6:
+                fund_ticker = filename_parts[1]   # The fund ticker part
+                series_id = filename_parts[3]     # The series ID part
+                report_date = filename_parts[4]   # The report date part
             else:
+                # Fallback: try to get from DataFrame if it exists
+                fund_ticker = holdings_df.get('fund_ticker', ['unknown']).iloc[0] if 'fund_ticker' in holdings_df.columns and not holdings_df.empty else 'unknown'
+                series_id = holdings_df.get('series_id', ['unknown']).iloc[0] if 'series_id' in holdings_df.columns and not holdings_df.empty else 'unknown'
                 report_date = 'unknown'
-                series_id = 'unknown'
             
             # Add report date column if it doesn't exist
             if 'report_period_date' not in holdings_df.columns:
@@ -370,11 +400,11 @@ class FundHoldingsWorkflow:
                     logger.warning(f"  - {row['name']}/{row['title']}- ISIN: {row['isin']}, CUSIP: {row['cusip']}")
             
             # Save enriched data
-            date_str = datetime.now().strftime("%Y-%m-%d-%H%M%S")
-            enriched_file = os.path.join(self.config.data_dir, f"holdings_enriched_{cik}_{series_id}_{report_date}_{date_str}.csv")
+            date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            enriched_file = os.path.join(self.config.data_dir, f"holdings_enriched_{fund_ticker}_{cik}_{series_id}_{report_date}_{date_str}.csv")
             enriched_df.to_csv(enriched_file, index=False, quoting=1)  # QUOTE_ALL
             
-            logger.info(f"Saved enriched holdings to {enriched_file}")
+            logger.info(f"Saved enriched holdings for {fund_ticker} to {enriched_file}")
             return enriched_file
             
         except Exception as e:
@@ -399,7 +429,7 @@ def main():
         cik_list=["1100663"],  # iShares
         enable_ticker_enrichment=True,
         max_series_per_cik=1,
-        max_filings_per_series=7,
+        max_filings_per_series=1,
         interested_etf_tickers=["IVV"]
     )
     
