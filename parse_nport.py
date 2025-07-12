@@ -181,10 +181,14 @@ class NPortParser:
             holdings_df['report_period_date'] = fund_info.get('report_period_date', '')
         
         # Convert numeric columns
-        numeric_columns = ['balance', 'value_usd', 'percent_value', 'loan_value']
+        numeric_columns = ['balance', 'value_usd', 'loan_value']
         for col in numeric_columns:
             if col in holdings_df.columns:
                 holdings_df[col] = pd.to_numeric(holdings_df[col], errors='coerce')
+        
+        # Convert percent_value from percentage to decimal (divide by 100)
+        if 'percent_value' in holdings_df.columns:
+            holdings_df['percent_value'] = pd.to_numeric(holdings_df['percent_value'], errors='coerce') / 100
         
         # Convert fund info numeric columns
         fund_numeric_columns = ['total_assets', 'total_liabilities', 'net_assets']

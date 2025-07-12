@@ -131,7 +131,7 @@ class FundHoldingsWorkflow:
             logger.info(f"Step 2: Collecting N-PORT filings for {len(series_data)} series")
             series_ids = self._extract_series_ids(series_data)
             
-            if self.config.max_series_per_cik:
+            if self.config.max_series_per_cik and self.config.max_series_per_cik > 0:
                 series_ids = series_ids[:self.config.max_series_per_cik]
             
             filings_files = []
@@ -349,9 +349,31 @@ class FundHoldingsWorkflow:
 
             logger.info(f"Starting ticker enrichment for {len(holdings_df)} holdings")
 
-            # Step 1: Use ISIN to lookup tickers
-            missing_ticker_mask = enriched_df['ticker'].isna()
+            # Filter out derivatives/swaps that don't have traditional tickers
+            def is_derivative_instrument(name, title):
+                """Check if instrument is a derivative that should be excluded from ticker lookup."""
+                name_lower = str(name).lower() if pd.notna(name) else ""
+                title_lower = str(title).lower() if pd.notna(title) else ""
+                
+                derivative_indicators = [
+                    "eln,", "equity linked note", "linked to nasdaq", "linked to s&p",
+                    "total return swap", "trs", "swap agreement", "derivative"
+                ]
+                
+                return any(indicator in name_lower or indicator in title_lower 
+                          for indicator in derivative_indicators)
+            
+            # Create mask for holdings that should be excluded from ticker lookup
+            derivative_mask = enriched_df.apply(
+                lambda row: is_derivative_instrument(row.get('name', ''), row.get('title', '')), 
+                axis=1
+            )
+            
+            # Initial missing ticker mask (excluding derivatives)
+            missing_ticker_mask = enriched_df['ticker'].isna() & ~derivative_mask
             missing_ticker_count = missing_ticker_mask.sum()
+            
+            logger.info(f"Excluding {derivative_mask.sum()} derivative instruments from ticker lookup")
             
             # Step 1: Use CUSIP to lookup tickers
             if missing_ticker_count > 0 and 'cusip' in [col.lower() for col in enriched_df.columns]:
@@ -360,8 +382,8 @@ class FundHoldingsWorkflow:
             else:
                 logger.info("Step 1: No CUSIP column found, skipping CUSIP lookup")
             
-            # Step 2: Use ISIN to lookup tickers
-            missing_ticker_mask = enriched_df['ticker'].isna()
+            # Step 2: Use ISIN to lookup tickers (excluding derivatives)
+            missing_ticker_mask = enriched_df['ticker'].isna() & ~derivative_mask
             missing_ticker_count = missing_ticker_mask.sum()
             
             if missing_ticker_count > 0 and 'isin' in [col.lower() for col in enriched_df.columns]:
@@ -395,14 +417,18 @@ class FundHoldingsWorkflow:
             elif missing_ticker_count > 0:
                 logger.info(f"{missing_ticker_count} holdings missing tickers, but no ISIN column available")
             
-            # Final summary
-            missing_ticker_mask = enriched_df['ticker'].isna()
+            # Final summary (excluding derivatives from missing count)
+            missing_ticker_mask = enriched_df['ticker'].isna() & ~derivative_mask
             missing_ticker_count = missing_ticker_mask.sum()
-            success_rate = (len(enriched_df) - missing_ticker_count) / len(enriched_df) * 100 if len(enriched_df) > 0 else 0
+            # Calculate success rate based on non-derivative holdings
+            non_derivative_count = (~derivative_mask).sum()
+            success_rate = (non_derivative_count - missing_ticker_count) / non_derivative_count * 100 if non_derivative_count > 0 else 0
             
-            logger.info(f"Ticker enrichment complete: {len(enriched_df) - missing_ticker_count}/{len(enriched_df)} holdings have tickers ({success_rate:.1f}%)")
+            logger.info(f"Ticker enrichment complete: {non_derivative_count - missing_ticker_count}/{non_derivative_count} non-derivative holdings have tickers ({success_rate:.1f}%)")
+            logger.info(f"Excluded {derivative_mask.sum()} derivative instruments (ELNs, swaps, etc.) from ticker lookup")
+            
             if missing_ticker_count > 0:
-                logger.warning(f"{missing_ticker_count} holdings still missing tickers after both CUSIP and ISIN lookup attempts")
+                logger.warning(f"{missing_ticker_count} non-derivative holdings still missing tickers after both CUSIP and ISIN lookup attempts")
 
                 for idx, row in enriched_df[missing_ticker_mask].iterrows():
                     logger.warning(f"  - {row['name']}/{row['title']}- ISIN: {row['isin']}, CUSIP: {row['cusip']}")
@@ -438,10 +464,9 @@ def main():
     config = WorkflowConfig(
         cik_list=CIK_MAP.values(),
         enable_ticker_enrichment=True,
-        max_series_per_cik=1,
-        max_filings_per_series=2,
-        # interested_etf_tickers=["IVV", "JEPI", "JEPQ"]
-        interested_etf_tickers=["JEPI", "JEPQ"]
+        max_series_per_cik=None,
+        max_filings_per_series=1,
+        interested_etf_tickers=["JEPI", "JEPQ", "IVV"]
     )
     
     workflow = FundHoldingsWorkflow(config)

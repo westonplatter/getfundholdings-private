@@ -107,6 +107,9 @@ class R2Client:
             # Read CSV file
             df = pd.read_csv(file_path)
             
+            # Replace NaN values with empty strings
+            df = df.where(pd.notnull(df), "")
+            
             # Convert DataFrame to JSON-friendly format
             # Convert to records format (list of dictionaries)
             holdings_data = df.to_dict('records')
@@ -148,6 +151,9 @@ class R2Client:
             True if successful, False otherwise
         """
         try:
+            # Replace NaN values with empty strings
+            df = df.where(pd.notnull(df), "")
+            
             # Convert DataFrame to JSON-friendly format
             holdings_data = df.to_dict('records')
             

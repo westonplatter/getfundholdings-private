@@ -153,6 +153,23 @@ class Config:
 df.to_csv(filename, index=False, quoting=1)
 ```
 
+### NaN Handling for JSON Export
+- **Replace NaN values with empty strings** for JSON compatibility
+- **Apply before JSON serialization** to ensure valid JSON output
+
+```python
+# Replace NaN values with empty strings for JSON export
+df = df.where(pd.notnull(df), "")
+
+# Example: R2 client JSON conversion
+holdings_data = df.to_dict('records')  # Now contains "" instead of NaN
+```
+
+**Rationale:**
+- JSON standard doesn't support NaN values
+- Empty strings provide consistent null representation
+- Maintains data structure while ensuring JSON validity
+
 ### Parquet Support
 - **Native datetime with timezone support**
 - **Better type preservation** than CSV
