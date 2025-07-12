@@ -384,6 +384,124 @@ class R2Client:
         except Exception as e:
             logger.warning(f"Object {key} not found or error getting info: {e}")
             return None
+    
+    def find_latest_enriched_holdings_by_ticker(self, data_dir: str = "data") -> Dict[str, str]:
+        """
+        Find the latest enriched holdings CSV file for each ticker in the data directory.
+        For each ticker, finds the file with the most recent report_date, and if there are
+        multiple files with the same report_date, selects the one with the latest timestamp.
+        
+        Args:
+            data_dir: Directory to search for enriched holdings files
+            
+        Returns:
+            Dictionary mapping ticker symbols to their latest file paths
+        """
+        try:
+            if not os.path.exists(data_dir):
+                logger.warning(f"Data directory does not exist: {data_dir}")
+                return {}
+            
+            # Pattern: holdings_enriched_{ticker}_{cik}_{series_id}_{report_date}_{timestamp}.csv
+            pattern = re.compile(r'^holdings_enriched_([A-Z]+)_(\d+)_([^_]+)_(\d{8})_(\d{8}_\d{6})\.csv$')
+            
+            ticker_files = {}
+            
+            for filename in os.listdir(data_dir):
+                match = pattern.match(filename)
+                if match:
+                    ticker, cik, series_id, report_date, timestamp = match.groups()
+                    file_path = os.path.join(data_dir, filename)
+                    
+                    # If this is the first file for this ticker
+                    if ticker not in ticker_files:
+                        ticker_files[ticker] = {
+                            'file_path': file_path,
+                            'report_date': report_date,
+                            'timestamp': timestamp,
+                            'cik': cik,
+                            'filename': filename
+                        }
+                    else:
+                        current_info = ticker_files[ticker]
+                        
+                        # Compare report dates first (more recent report date wins)
+                        if report_date > current_info['report_date']:
+                            ticker_files[ticker] = {
+                                'file_path': file_path,
+                                'report_date': report_date,
+                                'timestamp': timestamp,
+                                'cik': cik,
+                                'filename': filename
+                            }
+                        # If same report date, compare timestamps (latest timestamp wins)
+                        elif report_date == current_info['report_date'] and timestamp > current_info['timestamp']:
+                            ticker_files[ticker] = {
+                                'file_path': file_path,
+                                'report_date': report_date,
+                                'timestamp': timestamp,
+                                'cik': cik,
+                                'filename': filename
+                            }
+            
+            logger.info(f"Found latest enriched holdings files for {len(ticker_files)} tickers")
+            for ticker, info in ticker_files.items():
+                logger.info(f"  {ticker}: {info['filename']} (report_date: {info['report_date']}, timestamp: {info['timestamp']})")
+            
+            return {ticker: info['file_path'] for ticker, info in ticker_files.items()}
+            
+        except Exception as e:
+            logger.error(f"Error finding latest enriched holdings files: {e}")
+            return {}
+    
+    def upload_all_latest_enriched_holdings(self, data_dir: str = "data") -> Dict[str, bool]:
+        """
+        Find and upload the latest enriched holdings file for each ticker to R2.
+        
+        Args:
+            data_dir: Directory to search for enriched holdings files
+            
+        Returns:
+            Dictionary mapping ticker symbols to upload success status
+        """
+        try:
+            latest_files = self.find_latest_enriched_holdings_by_ticker(data_dir)
+            
+            if not latest_files:
+                logger.warning("No enriched holdings files found to upload")
+                return {}
+            
+            upload_results = {}
+            
+            for ticker, file_path in latest_files.items():
+                logger.info(f"Uploading latest holdings for {ticker}: {os.path.basename(file_path)}")
+                
+                # Extract CIK from filename
+                filename = os.path.basename(file_path)
+                pattern = re.compile(r'^holdings_enriched_[A-Z]+_(\d+)_')
+                match = pattern.match(filename)
+                
+                if match:
+                    cik = match.group(1)
+                    success = self.upload_enriched_holdings_to_latest(file_path, cik)
+                    upload_results[ticker] = success
+                    
+                    if success:
+                        logger.info(f"Successfully uploaded {ticker} holdings")
+                    else:
+                        logger.error(f"Failed to upload {ticker} holdings")
+                else:
+                    logger.error(f"Could not extract CIK from filename: {filename}")
+                    upload_results[ticker] = False
+            
+            successful_uploads = sum(1 for success in upload_results.values() if success)
+            logger.info(f"Upload completed: {successful_uploads}/{len(upload_results)} files uploaded successfully")
+            
+            return upload_results
+            
+        except Exception as e:
+            logger.error(f"Error uploading all latest enriched holdings: {e}")
+            return {}
 
 
 def main():
@@ -396,41 +514,17 @@ def main():
         latest_objects = client.list_objects("latest/")
         logger.info(f"Objects in latest folder: {latest_objects}")
         
-        # Example: Upload a test CSV file as JSON (if it exists)
-        # New filename format: holdings_enriched_{fund_ticker}_{cik}_{series_id}_{report_date}_{timestamp}.csv
-        test_file = "data/holdings_enriched_IVV_1100663_S000004310_20250711_20250711_143022.csv"
-        if os.path.exists(test_file):
-            success = client.upload_enriched_holdings_to_latest(test_file, "1100663")
-            if success:
-                logger.info("Test CSV to JSON upload successful")
-            else:
-                logger.error("Test CSV to JSON upload failed")
-        else:
-            logger.info(f"Test file not found: {test_file}")
-            
-            # Look for any enriched holdings CSV files in data directory
-            data_dir = "data"
-            if os.path.exists(data_dir):
-                for file in os.listdir(data_dir):
-                    if file.startswith("holdings_enriched_") and file.endswith(".csv"):
-                        test_file = os.path.join(data_dir, file)
-                        logger.info(f"Found test CSV file: {test_file}")
-                        success = client.upload_enriched_holdings_to_latest(test_file, "1100663")
-                        if success:
-                            logger.info("Test CSV to JSON upload successful")
-                        else:
-                            logger.error("Test CSV to JSON upload failed")
-                        break
+        # Upload all latest enriched holdings files automatically
+        logger.info("Finding and uploading latest enriched holdings files...")
+        upload_results = client.upload_all_latest_enriched_holdings("data")
         
-        # Example: Test CSV to JSON conversion without upload
-        if os.path.exists(test_file):
-            json_data = client.read_csv_to_json(test_file)
-            if json_data:
-                logger.info(f"CSV conversion successful. Holdings: {json_data['metadata']['total_holdings']}")
-                logger.info(f"Fund: {json_data['metadata']['fund_ticker']}")
-                logger.info(f"Sample holding: {json_data['holdings'][0] if json_data['holdings'] else 'None'}")
-            else:
-                logger.error("CSV to JSON conversion failed")
+        if upload_results:
+            logger.info(f"Upload summary:")
+            for ticker, success in upload_results.items():
+                status = "SUCCESS" if success else "FAILED"
+                logger.info(f"  {ticker}: {status}")
+        else:
+            logger.warning("No enriched holdings files found to upload")
         
     except Exception as e:
         logger.error(f"Error in main: {e}")

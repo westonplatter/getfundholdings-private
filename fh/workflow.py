@@ -20,6 +20,14 @@ from fh.sec_client import SECHTTPClient
 from fh.openfigi_client import OpenFIGIClient
 
 
+CIK_MAP = {
+    # fund issuer => cik
+    "ishares": "1100663",
+    "jpmorgan": "0001485894",
+    "blackrock": "0001761055",
+}
+
+
 @dataclass
 class WorkflowConfig:
     """Simple configuration for workflow execution."""
@@ -413,6 +421,8 @@ class FundHoldingsWorkflow:
         return None
 
 
+
+
 def main():
     """Example usage of the workflow."""
     # config = WorkflowConfig(
@@ -426,11 +436,12 @@ def main():
     # )
 
     config = WorkflowConfig(
-        cik_list=["1100663"],  # iShares
+        cik_list=CIK_MAP.values(),
         enable_ticker_enrichment=True,
         max_series_per_cik=1,
-        max_filings_per_series=1,
-        interested_etf_tickers=["IVV"]
+        max_filings_per_series=2,
+        # interested_etf_tickers=["IVV", "JEPI", "JEPQ"]
+        interested_etf_tickers=["JEPI", "JEPQ"]
     )
     
     workflow = FundHoldingsWorkflow(config)
