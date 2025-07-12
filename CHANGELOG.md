@@ -1,0 +1,19 @@
+# Changelog
+
+## 0.1.0 (2025-07-12)
+
+
+### Features
+
+* able to download nports for CIK -&gt; Series -&gt; Class -&gt; listed NPort ([650838c](https://github.com/westonplatter/getfundholdings-private/commit/650838cbe782610e6b01bca21ca924d66b2d5d72))
+* able to upload to r2 ([3524971](https://github.com/westonplatter/getfundholdings-private/commit/35249715039bba8711d73d14b8f0ba7b0a8a70f6))
+* completed enrichment process ([419c03f](https://github.com/westonplatter/getfundholdings-private/commit/419c03f8bba6eec7cdedadac9659a0a0e1ae7881))
+* do lookups across isin as well ([712e1ab](https://github.com/westonplatter/getfundholdings-private/commit/712e1ab1a0488c0168ef256d35447cf55ca19cf6))
+* generate enriched holdings data for a specific ETF ([3e0eb60](https://github.com/westonplatter/getfundholdings-private/commit/3e0eb60e1b7e1ece4a679080414f1a28da7143bc))
+* uploaded JEPQ ([03e0964](https://github.com/westonplatter/getfundholdings-private/commit/03e096418dbc0a25a652e1bc41dd0640e635f63b))
+
+
+### Bug Fixes
+
+* get cicd working ([e91a2bf](https://github.com/westonplatter/getfundholdings-private/commit/e91a2bf91d19ba442956a1d305332bc5d769ed9f))
+* handle small issues ([ad19a60](https://github.com/westonplatter/getfundholdings-private/commit/ad19a60b8131204acf65a10aeb12deffe581b2d7))
