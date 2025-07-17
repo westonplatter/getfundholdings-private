@@ -46,6 +46,18 @@ results = workflow.run()  # Execute complete pipeline
 - `uv run python main.py` - Legacy interface
 - Direct import for programmatic use
 
+## R2 Upload & Multi-Environment Support
+
+### Summary Ticker Generation & Upload
+- `create_summary_tickers.py` - Generates summary_tickers.json with all ETF metadata using same logic as R2Client
+- Supports multi-environment upload via `-e dev|prod` flag using `.env.dev` and `.env.prod` files
+- `fh/r2_client.py` supports environment-based bucket selection and summary ticker upload
+
+### Environment Configuration
+- `.env.dev` and `.env.prod` files contain environment-specific R2 credentials and bucket names
+- R2Client automatically loads appropriate environment file based on bucket parameter
+- CLI tools use `-e/--env` flag for consistent environment selection across scripts
+
 ## Data Enhancement Pipeline
 
 ### Ticker Symbol Enrichment
@@ -67,6 +79,27 @@ isin_enriched = openfigi_client.add_tickers_to_dataframe_by_isin(
 ```
 
 This approach maximizes ticker coverage for both domestic and international holdings.
+
+### Modular Enrichment Architecture
+The enrichment process uses a **modular design pattern** in `fh/workflow.py` for maintainability:
+
+**Parent Method:** `enrich_holdings()` - Coordinates all enrichment steps  
+**Child Methods:**
+- `_extract_file_metadata()` - Extracts metadata from filename/DataFrame
+- `_enrich_metadata()` - Adds CIK, series, report date metadata  
+- `_enrich_timestamps()` - Adds enrichment timestamps
+- `_enrich_tickers()` - Ticker lookup (CUSIP → ISIN fallback)
+- `_enrich_notes()` - Data quality notes (`enrichment_notes` column)
+
+**Key Benefits:**
+- Each enrichment type is isolated and testable
+- Easy to add new enrichment steps or modify existing ones
+- Automatic derivative instrument detection (ELNs, swaps) - excludes from ticker lookup
+- Data quality tracking via structured notes
+
+**Data Quality Notes Added:**
+- `derivative_instrument` - ELNs, total return swaps, etc.
+- `missing_cusip/isin/ticker` - Missing identifier flags
 
 ## Python Development Commands
 

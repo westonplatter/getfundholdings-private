@@ -15,6 +15,7 @@ import logging
 from typing import Dict, Optional, List
 from urllib.parse import urljoin
 from loguru import logger
+from tqdm import tqdm
 
 class OpenFIGIClient:
     """
@@ -152,7 +153,7 @@ class OpenFIGIClient:
         try:
             with open(self.cache_file, 'w') as f:
                 json.dump(self.cache, f, indent=2)
-            logger.info(f"Saved {len(self.cache)} mappings to cache file")
+            logger.debug(f"Saved {len(self.cache)} mappings to cache file")
         except Exception as e:
             logger.error(f"Failed to save cache file: {e}")
     
@@ -325,8 +326,7 @@ class OpenFIGIClient:
         """
         results = {}
         
-        for i, cusip in enumerate(cusips):
-            # logger.info(f"Processing CUSIP {i+1}/{len(cusips)}: {cusip}")
+        for _, cusip in tqdm(enumerate(cusips), desc="Processing CUSIPs", total=len(cusips), leave=False):
             results[cusip] = self.get_ticker_from_cusip(cusip)
         
         return results
@@ -343,8 +343,7 @@ class OpenFIGIClient:
         """
         results = {}
         
-        for i, isin in enumerate(isins):
-            # logger.info(f"Processing ISIN {i+1}/{len(isins)}: {isin}")
+        for _, isin in tqdm(enumerate(isins), desc="Processing ISINs", total=len(isins), leave=False):
             results[isin] = self.get_ticker_from_isin(isin)
         
         return results

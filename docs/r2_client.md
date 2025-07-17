@@ -17,6 +17,7 @@ The R2 Client (`fh/r2_client.py`) provides a streamlined interface for uploading
 #### R2 Bucket Structure
 ```
 {bucket}/
+├── summary_tickers.json              # Root-level ticker listing for website
 ├── latest/
 │   ├── IVV/
 │   │   └── holdings_enriched.json

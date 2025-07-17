@@ -14,6 +14,7 @@ from loguru import logger
 import pandas as pd
 from dataclasses import dataclass
 from typing import List
+from tqdm import tqdm
 
 
 from fh.sec_client import SECHTTPClient
@@ -22,7 +23,8 @@ from fh.openfigi_client import OpenFIGIClient
 
 CIK_MAP = {
     # fund issuer => cik
-    "ishares": "1100663",
+    "iShares Trust": "1100663",
+    "iShares, Inc.": "0000930667",
     "jpmorgan": "0001485894",
     "blackrock": "0001761055",
 }
@@ -69,11 +71,11 @@ class FundHoldingsWorkflow:
         
         start_time = time.time()
         
-        for cik in self.config.cik_list:
+        for cik in tqdm(self.config.cik_list, desc="Processing CIKs", unit="CIK"):
             logger.info(f"Processing CIK: {cik}")
             
             try:
-                cik_result = self._process_cik(cik)
+                cik_result = self.process_cik(cik)
                 results["cik_results"][cik] = cik_result
                 
                 if cik_result.get("success", False):
@@ -94,7 +96,7 @@ class FundHoldingsWorkflow:
         logger.info(f"Workflow completed: {results['successful_ciks']}/{results['total_ciks']} CIKs successful")
         return results
     
-    def _process_cik(self, cik: str) -> Dict[str, Any]:
+    def process_cik(self, cik: str) -> Dict[str, Any]:
         """Process a single CIK through the complete pipeline."""
         result = {
             "cik": cik,
@@ -137,7 +139,7 @@ class FundHoldingsWorkflow:
             filings_files = []
             total_filings = 0
             
-            for series_id in series_ids:
+            for series_id in tqdm(series_ids, desc=f"Collecting filings for {len(series_ids)} series", unit="series", leave=False):
                 try:
                     series_filings = self.sec_client.fetch_series_filings(series_id)
                     if series_filings:
@@ -163,7 +165,7 @@ class FundHoldingsWorkflow:
             
             # Step 4: Extract holdings data
             logger.info(f"Step 4: Extracting holdings data from {len(xml_files)} XML files")
-            holdings_files = self._extract_holdings_data(cik, xml_files, series_ticker_map)
+            holdings_files = self.extract_holdings_data(cik, xml_files, series_ticker_map)
             if holdings_files:
                 result["steps_completed"].append("holdings_extraction")
                 result["output_files"].extend(holdings_files)
@@ -173,13 +175,13 @@ class FundHoldingsWorkflow:
                 if self.config.enable_ticker_enrichment and self.openfigi_client:
                     logger.info(f"Step 5: Enriching holdings with ticker data")
                     enriched_files = []
-                    for holdings_file in holdings_files:
-                        enriched_file = self._enrich_with_tickers(holdings_file, cik, series_ticker_map)
+                    for holdings_file in tqdm(holdings_files, desc=f"Enriching {len(holdings_files)} holdings files", unit="file", leave=False):
+                        enriched_file = self.enrich_holdings(holdings_file, cik, series_ticker_map)
                         if enriched_file:
                             enriched_files.append(enriched_file)
                     
                     if enriched_files:
-                        result["steps_completed"].append("ticker_enrichment")
+                        result["steps_completed"].append("holdings_enrichment")
                         result["output_files"].extend(enriched_files)
                         result["enriched_files"] = enriched_files
             
@@ -228,7 +230,7 @@ class FundHoldingsWorkflow:
         """Download N-PORT XML files for all series."""
         xml_files = []
         
-        for series_id in series_ids:
+        for series_id in tqdm(series_ids, desc=f"Downloading XMLs for {len(series_ids)} series", unit="series", leave=False):
             try:
                 # Load series filings
                 series_filings_data = self.sec_client.load_series_filings(cik, series_id)
@@ -241,7 +243,7 @@ class FundHoldingsWorkflow:
                 if self.config.max_filings_per_series:
                     filings = filings[:self.config.max_filings_per_series]
                 
-                for filing in filings:
+                for filing in tqdm(filings, desc=f"Downloading filings for {series_id}", unit="filing", leave=False):
                     accession_number = filing.get('accession_number')
                     if accession_number:
                         xml_file = self.sec_client.download_and_save_nport(cik, accession_number, series_id)
@@ -253,7 +255,7 @@ class FundHoldingsWorkflow:
         
         return xml_files
     
-    def _extract_holdings_data(self, cik: str, xml_files: List[str], series_ticker_map: Dict[str, str]) -> List[str]:
+    def extract_holdings_data(self, cik: str, xml_files: List[str], series_ticker_map: Dict[str, str]) -> List[str]:
         """Extract holdings data from XML files and save individual CSV files."""
         holdings_files = []
         
@@ -263,7 +265,7 @@ class FundHoldingsWorkflow:
             
             current_date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
             
-            for xml_file in xml_files:
+            for xml_file in tqdm(xml_files, desc=f"Extracting holdings from {len(xml_files)} XML files", unit="file", leave=False):
                 try:
                     if os.path.exists(xml_file):
                         holdings_df, fund_info = parse_nport_file(xml_file)
@@ -314,159 +316,222 @@ class FundHoldingsWorkflow:
         
         return []
 
-    def _enrich_with_tickers(self, holdings_file: str, cik: str, series_ticker_map: Dict[str, str]) -> Optional[str]:
-        """Enrich holdings data with ticker symbols using both CUSIP and ISIN lookups."""
+    def enrich_holdings(self, holdings_file: str, cik: str, series_ticker_map: Dict[str, str]) -> Optional[str]:
+        """Parent enrichment method that coordinates all enrichment steps."""
         try:
             # Load holdings data
             holdings_df = pd.read_csv(holdings_file)
+            logger.info(f"Starting holdings enrichment for {len(holdings_df)} holdings")
             
-            # Extract fund ticker, report date and series_id from filename
-            # Format: holdings_{fund_ticker}_{cik}_{series_id}_{report_date}_{current_datetime}.csv
-            filename = os.path.basename(holdings_file)
-            filename_parts = filename.replace('.csv', '').split('_')
+            # Extract metadata from filename
+            metadata = self._extract_file_metadata(holdings_file, holdings_df)
             
-            if len(filename_parts) >= 6:
-                fund_ticker = filename_parts[1]   # The fund ticker part
-                series_id = filename_parts[3]     # The series ID part
-                report_date = filename_parts[4]   # The report date part
-            else:
-                # Fallback: try to get from DataFrame if it exists
-                fund_ticker = holdings_df.get('fund_ticker', ['unknown']).iloc[0] if 'fund_ticker' in holdings_df.columns and not holdings_df.empty else 'unknown'
-                series_id = holdings_df.get('series_id', ['unknown']).iloc[0] if 'series_id' in holdings_df.columns and not holdings_df.empty else 'unknown'
-                report_date = 'unknown'
-            
-            # Add report date column if it doesn't exist
-            if 'report_period_date' not in holdings_df.columns:
-                holdings_df['report_period_date'] = report_date
-
-            # Create enriched dataframe with no tickers
+            # Create enriched dataframe
             enriched_df = holdings_df.copy()
-            enriched_df['ticker'] = None
             
-            # Add enrichment datetime in UTC (timezone-aware)
-            enrichment_datetime_utc = datetime.now(timezone.utc)
-            enriched_df['enrichment_datetime'] = enrichment_datetime_utc
-
-            logger.info(f"Starting ticker enrichment for {len(holdings_df)} holdings")
-
-            # Filter out derivatives/swaps that don't have traditional tickers
-            def is_derivative_instrument(name, title):
-                """Check if instrument is a derivative that should be excluded from ticker lookup."""
-                name_lower = str(name).lower() if pd.notna(name) else ""
-                title_lower = str(title).lower() if pd.notna(title) else ""
-                
-                derivative_indicators = [
-                    "eln,", "equity linked note", "linked to nasdaq", "linked to s&p",
-                    "total return swap", "trs", "swap agreement", "derivative"
-                ]
-                
-                return any(indicator in name_lower or indicator in title_lower 
-                          for indicator in derivative_indicators)
-            
-            # Create mask for holdings that should be excluded from ticker lookup
-            derivative_mask = enriched_df.apply(
-                lambda row: is_derivative_instrument(row.get('name', ''), row.get('title', '')), 
-                axis=1
-            )
-            
-            # Initial missing ticker mask (excluding derivatives)
-            missing_ticker_mask = enriched_df['ticker'].isna() & ~derivative_mask
-            missing_ticker_count = missing_ticker_mask.sum()
-            
-            logger.info(f"Excluding {derivative_mask.sum()} derivative instruments from ticker lookup")
-            
-            # Step 1: Use CUSIP to lookup tickers
-            if missing_ticker_count > 0 and 'cusip' in [col.lower() for col in enriched_df.columns]:
-                logger.info("Step 1: Attempting ticker lookup via CUSIP")
-                enriched_df = self.openfigi_client.add_tickers_to_dataframe_by_cusip(enriched_df, cusip_column='cusip')
-            else:
-                logger.info("Step 1: No CUSIP column found, skipping CUSIP lookup")
-            
-            # Step 2: Use ISIN to lookup tickers (excluding derivatives)
-            missing_ticker_mask = enriched_df['ticker'].isna() & ~derivative_mask
-            missing_ticker_count = missing_ticker_mask.sum()
-            
-            if missing_ticker_count > 0 and 'isin' in [col.lower() for col in enriched_df.columns]:
-                logger.info(f"Step 2: {missing_ticker_count} holdings missing tickers, trying ISIN lookup")
-                
-                # Get holdings that failed CUSIP lookup but have ISINs
-                missing_ticker_holdings = enriched_df[missing_ticker_mask].copy()
-                has_isin_mask = (missing_ticker_holdings['isin'].notna()) & (missing_ticker_holdings['isin'] != '')
-                isin_candidates = missing_ticker_holdings[has_isin_mask]
-                
-                if not isin_candidates.empty:
-                    logger.info(f"Found {len(isin_candidates)} holdings with ISINs to try")
-                    
-                    # Try ISIN lookup for these holdings
-                    isin_enriched = self.openfigi_client.add_tickers_to_dataframe_by_isin(
-                        isin_candidates, isin_column='isin'
-                    )
-                    
-                    # Update the main dataframe with successful ISIN lookups
-                    # Only update where ISIN lookup succeeded (ticker is not null)
-                    successful_isin_mask = isin_enriched['ticker'].notna()
-                    if successful_isin_mask.any():
-                        successful_isin_lookups = isin_enriched[successful_isin_mask]
-                        logger.info(f"ISIN lookup successful for {len(successful_isin_lookups)} additional holdings")
-                        
-                        # Update the ticker column for these rows in the original dataframe
-                        for idx in successful_isin_lookups.index:
-                            enriched_df.loc[idx, 'ticker'] = successful_isin_lookups.loc[idx, 'ticker']
-                else:
-                    logger.info("No holdings with valid ISINs found for fallback lookup")
-            elif missing_ticker_count > 0:
-                logger.info(f"{missing_ticker_count} holdings missing tickers, but no ISIN column available")
-            
-            # Final summary (excluding derivatives from missing count)
-            missing_ticker_mask = enriched_df['ticker'].isna() & ~derivative_mask
-            missing_ticker_count = missing_ticker_mask.sum()
-            # Calculate success rate based on non-derivative holdings
-            non_derivative_count = (~derivative_mask).sum()
-            success_rate = (non_derivative_count - missing_ticker_count) / non_derivative_count * 100 if non_derivative_count > 0 else 0
-            
-            logger.info(f"Ticker enrichment complete: {non_derivative_count - missing_ticker_count}/{non_derivative_count} non-derivative holdings have tickers ({success_rate:.1f}%)")
-            logger.info(f"Excluded {derivative_mask.sum()} derivative instruments (ELNs, swaps, etc.) from ticker lookup")
-            
-            if missing_ticker_count > 0:
-                logger.warning(f"{missing_ticker_count} non-derivative holdings still missing tickers after both CUSIP and ISIN lookup attempts")
-
-                for idx, row in enriched_df[missing_ticker_mask].iterrows():
-                    logger.warning(f"  - {row['name']}/{row['title']}- ISIN: {row['isin']}, CUSIP: {row['cusip']}")
+            # Apply all enrichment steps
+            enriched_df = self._enrich_metadata(enriched_df, metadata)
+            enriched_df = self._enrich_timestamps(enriched_df)
+            enriched_df = self._enrich_tickers(enriched_df)
+            enriched_df = self._enrich_notes(enriched_df)
             
             # Save enriched data
-            date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-            enriched_file = os.path.join(self.config.data_dir, f"holdings_enriched_{fund_ticker}_{cik}_{series_id}_{report_date}_{date_str}.csv")
-            enriched_df.to_csv(enriched_file, index=False, quoting=1)  # QUOTE_ALL
+            enriched_file = self._save_enriched_data(enriched_df, metadata)
             
-            logger.info(f"Saved enriched holdings for {fund_ticker} to {enriched_file}")
+            logger.info(f"Holdings enrichment complete for {metadata['fund_ticker']}")
             return enriched_file
             
         except Exception as e:
-            logger.error(f"Failed to enrich holdings with tickers: {e}")
+            logger.error(f"Failed to enrich holdings: {e}")
+            return None
+
+    def _extract_file_metadata(self, holdings_file: str, holdings_df: pd.DataFrame) -> Dict[str, str]:
+        """Extract metadata from filename and DataFrame."""
+        filename = os.path.basename(holdings_file)
+        filename_parts = filename.replace('.csv', '').split('_')
         
-        return None
+        if len(filename_parts) >= 6:
+            return {
+                'fund_ticker': filename_parts[1],
+                'cik': filename_parts[2],
+                'series_id': filename_parts[3],
+                'report_date': filename_parts[4],
+                'filename': filename
+            }
+        else:
+            # Fallback: try to get from DataFrame
+            return {
+                'fund_ticker': holdings_df.get('fund_ticker', ['unknown']).iloc[0] if 'fund_ticker' in holdings_df.columns and not holdings_df.empty else 'unknown',
+                'cik': 'unknown',
+                'series_id': holdings_df.get('series_id', ['unknown']).iloc[0] if 'series_id' in holdings_df.columns and not holdings_df.empty else 'unknown',
+                'report_date': 'unknown',
+                'filename': filename
+            }
+
+    def _enrich_metadata(self, enriched_df: pd.DataFrame, metadata: Dict[str, str]) -> pd.DataFrame:
+        """Enrich with CIK, series, and report date metadata."""
+        logger.info("Enriching with metadata (CIK, series, report date)")
+        
+        # Add report date column if it doesn't exist
+        if 'report_period_date' not in enriched_df.columns:
+            enriched_df['report_period_date'] = metadata['report_date']
+        
+        # Ensure fund_ticker and series_id columns exist
+        if 'fund_ticker' not in enriched_df.columns:
+            enriched_df['fund_ticker'] = metadata['fund_ticker']
+        if 'series_id' not in enriched_df.columns:
+            enriched_df['series_id'] = metadata['series_id']
+            
+        return enriched_df
+
+    def _enrich_timestamps(self, enriched_df: pd.DataFrame) -> pd.DataFrame:
+        """Enrich with timestamp data."""
+        logger.info("Enriching with timestamps")
+        
+        # Add enrichment datetime in UTC (timezone-aware)
+        enrichment_datetime_utc = datetime.now(timezone.utc)
+        enriched_df['enrichment_datetime'] = enrichment_datetime_utc
+        
+        return enriched_df
+
+    def _enrich_tickers(self, enriched_df: pd.DataFrame) -> pd.DataFrame:
+        """Enrich with ticker symbols using CUSIP and ISIN lookups."""
+        if not self.openfigi_client:
+            logger.info("Ticker enrichment disabled - no OpenFIGI client available")
+            enriched_df['ticker'] = None
+            return enriched_df
+            
+        logger.info("Enriching with ticker symbols")
+        
+        # Initialize ticker column
+        enriched_df['ticker'] = None
+        
+        # Identify derivative instruments to exclude
+        derivative_mask = self._identify_derivative_instruments(enriched_df)
+        logger.info(f"Excluding {derivative_mask.sum()} derivative instruments from ticker lookup")
+        
+        # Step 1: CUSIP lookup
+        enriched_df = self._enrich_tickers_by_cusip(enriched_df, derivative_mask)
+        
+        # Step 2: ISIN fallback lookup
+        enriched_df = self._enrich_tickers_by_isin(enriched_df, derivative_mask)
+        
+        # Log final ticker enrichment results
+        self._log_ticker_enrichment_results(enriched_df, derivative_mask)
+        
+        return enriched_df
+
+    def _identify_derivative_instruments(self, enriched_df: pd.DataFrame) -> pd.Series:
+        """Identify derivative instruments that should be excluded from ticker lookup."""
+        def is_derivative_instrument(name: str, title: str) -> bool:
+            name_lower = str(name).lower() if pd.notna(name) else ""
+            title_lower = str(title).lower() if pd.notna(title) else ""
+            
+            derivative_indicators = [
+                "eln,", "equity linked note", "linked to nasdaq", "linked to s&p",
+                "total return swap", "trs", "swap agreement", "derivative"
+            ]
+            
+            return any(indicator in name_lower or indicator in title_lower 
+                      for indicator in derivative_indicators)
+        
+        return enriched_df.apply(
+            lambda row: is_derivative_instrument(row.get('name', ''), row.get('title', '')), 
+            axis=1
+        )
+
+
+    def _enrich_tickers_by_cusip(self, enriched_df: pd.DataFrame, derivative_mask: pd.Series) -> pd.DataFrame:
+        """Enrich tickers using CUSIP lookup."""
+        missing_ticker_mask = enriched_df['ticker'].isna() & ~derivative_mask
+        missing_ticker_count = missing_ticker_mask.sum()
+        
+        if missing_ticker_count > 0 and 'cusip' in [col.lower() for col in enriched_df.columns]:
+            logger.info(f"{missing_ticker_count} holdings missing tickers, trying CUSIP lookup")
+            enriched_df = self.openfigi_client.add_tickers_to_dataframe_by_cusip(enriched_df, cusip_column='cusip')
+        else:
+            logger.info("No CUSIP column found or no holdings need CUSIP lookup")
+            
+        return enriched_df
+
+    def _enrich_tickers_by_isin(self, enriched_df: pd.DataFrame, derivative_mask: pd.Series) -> pd.DataFrame:
+        """Enrich tickers using ISIN lookup."""
+        missing_ticker_mask = enriched_df['ticker'].isna() & ~derivative_mask
+        missing_ticker_count = missing_ticker_mask.sum()
+        
+        if missing_ticker_count > 0 and 'isin' in [col.lower() for col in enriched_df.columns]:
+            logger.info(f"{missing_ticker_count} holdings missing tickers, trying ISIN lookup")
+            enriched_df = self.openfigi_client.add_tickers_to_dataframe_by_isin(enriched_df, isin_column='isin')
+        else:
+            logger.info("No ISIN column found or no holdings need ISIN lookup")
+            
+        return enriched_df
+
+    def _log_ticker_enrichment_results(self, enriched_df: pd.DataFrame, derivative_mask: pd.Series) -> None:
+        """Log final ticker enrichment results and warnings."""
+        missing_ticker_mask = enriched_df['ticker'].isna() & ~derivative_mask
+        missing_ticker_count = missing_ticker_mask.sum()
+        non_derivative_count = (~derivative_mask).sum()
+        success_rate = (non_derivative_count - missing_ticker_count) / non_derivative_count * 100 if non_derivative_count > 0 else 0
+        
+        logger.info(f"Ticker enrichment complete: {non_derivative_count - missing_ticker_count}/{non_derivative_count} non-derivative holdings have tickers ({success_rate:.1f}%)")
+        logger.info(f"Excluded {derivative_mask.sum()} derivative instruments (ELNs, swaps, etc.) from ticker lookup")
+        
+        if missing_ticker_count > 0:
+            logger.warning(f"{missing_ticker_count} non-derivative holdings still missing tickers after both CUSIP and ISIN lookup attempts")
+            for idx, row in enriched_df[missing_ticker_mask].iterrows():
+                logger.warning(f"  - {row['name']}/{row['title']}- ISIN: {row['isin']}, CUSIP: {row['cusip']}")
+
+    def _enrich_notes(self, enriched_df: pd.DataFrame) -> pd.DataFrame:
+        """Enrich with notes about data quality issues."""
+        logger.info("Enriching with data quality notes")
+        
+        # Initialize notes column
+        enriched_df['enrichment_notes'] = ""
+        
+        # Add notes for missing identifiers
+        missing_cusip = enriched_df['cusip'].isna() | (enriched_df['cusip'] == '')
+        missing_isin = enriched_df['isin'].isna() | (enriched_df['isin'] == '')
+        missing_ticker = enriched_df['ticker'].isna() | (enriched_df['ticker'] == '')
+        
+        # Derivative instruments note
+        derivative_mask = self._identify_derivative_instruments(enriched_df)
+        enriched_df.loc[derivative_mask, 'enrichment_notes'] += "derivative_instrument; "
+        
+        # Missing identifier notes
+        enriched_df.loc[missing_cusip, 'enrichment_notes'] += "missing_cusip; "
+        enriched_df.loc[missing_isin, 'enrichment_notes'] += "missing_isin; "
+        enriched_df.loc[missing_ticker & ~derivative_mask, 'enrichment_notes'] += "missing_ticker; "
+        
+        # Clean up notes (remove trailing semicolons and spaces)
+        enriched_df['enrichment_notes'] = enriched_df['enrichment_notes'].str.rstrip('; ')
+        
+        return enriched_df
+
+    def _save_enriched_data(self, enriched_df: pd.DataFrame, metadata: Dict[str, str]) -> str:
+        """Save the enriched DataFrame to a CSV file."""
+        date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        enriched_file = os.path.join(
+            self.config.data_dir, 
+            f"holdings_enriched_{metadata['fund_ticker']}_{metadata['cik']}_{metadata['series_id']}_{metadata['report_date']}_{date_str}.csv"
+        )
+        enriched_df.to_csv(enriched_file, index=False, quoting=1)  # QUOTE_ALL
+        
+        logger.info(f"Saved enriched holdings for {metadata['fund_ticker']} to {enriched_file}")
+        return enriched_file
 
 
 
 
 def main():
     """Example usage of the workflow."""
-    # config = WorkflowConfig(
-    #     # cik_list=["1100663"],  # iShares
-    #     cik_list=["0001485894"],  # iShares
-    #     enable_ticker_enrichment=True,
-    #     max_series_per_cik=1,
-    #     max_filings_per_series=1,
-    #     # interested_etf_tickers=["IVV"]
-    #     interested_etf_tickers=["JEPI"]
-    # )
-
     config = WorkflowConfig(
         cik_list=CIK_MAP.values(),
         enable_ticker_enrichment=True,
         max_series_per_cik=None,
         max_filings_per_series=1,
-        interested_etf_tickers=["JEPI", "JEPQ", "IVV"]
+        # interested_etf_tickers=["JEPI", "JEPQ", "IVV"]
+        interested_etf_tickers=["URTH"]
     )
     
     workflow = FundHoldingsWorkflow(config)

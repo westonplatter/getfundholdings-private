@@ -10,7 +10,7 @@ import xml.etree.ElementTree as ET
 import pandas as pd
 from typing import Dict, List, Any, Optional
 import os
-from fh.schemas import HoldingsRawDF, validate_holdings_raw
+from fh.internal_schemas.holdings_schema import HoldingsRawDF, validate_holdings_raw
 
 
 class NPortParser:

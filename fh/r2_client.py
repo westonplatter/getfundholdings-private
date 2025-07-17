@@ -24,24 +24,32 @@ class R2Client:
     Implements proper configuration, error handling, and logging per R2 requirements.
     """
     
-    def __init__(self, env_file: str = ".env"):
+    def __init__(self, env_file: str = None, bucket: str = "dev"):
         """
         Initialize R2 client with Cloudflare credentials.
         
         Args:
-            env_file: Path to environment file containing R2 credentials
+            env_file: Path to environment file containing R2 credentials. 
+                     If None, uses .env.{bucket} (e.g., .env.dev, .env.prod)
+            bucket: Bucket environment to use ("dev" or "prod"). Defaults to "dev".
         """
+        # Determine which env file to load
+        if env_file is None:
+            env_file = f".env.{bucket}"
+        
         # Load environment variables
         load_dotenv(env_file)
         
         # Initialize R2 client
         self.client = self._setup_r2_client()
+        
+        # Get bucket name from environment
         self.bucket_name = os.getenv('CLOUDFLARE_R2_BUCKET_NAME')
         
         if not self.bucket_name:
-            raise ValueError("CLOUDFLARE_R2_BUCKET_NAME not found in environment variables")
+            raise ValueError(f"CLOUDFLARE_R2_BUCKET_NAME not found in {env_file}")
         
-        logger.info(f"R2 client initialized for bucket: {self.bucket_name}")
+        logger.info(f"R2 client initialized for {bucket} environment using {env_file}, bucket: {self.bucket_name}")
     
     def _setup_r2_client(self):
         """Setup R2 client with proper configuration."""
@@ -508,13 +516,60 @@ class R2Client:
         except Exception as e:
             logger.error(f"Error uploading all latest enriched holdings: {e}")
             return {}
+    
+    def upload_summary_tickers(self, file_path: str = "data/summary_tickers.json") -> bool:
+        """
+        Upload summary tickers JSON file to R2.
+        
+        Args:
+            file_path: Path to the summary_tickers.json file
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            if not os.path.exists(file_path):
+                logger.error(f"Summary tickers file not found: {file_path}")
+                return False
+            
+            # Read the summary tickers JSON file
+            with open(file_path, 'r') as f:
+                summary_data = json.load(f)
+            
+            # Add upload timestamp to metadata
+            if 'metadata' in summary_data:
+                summary_data['metadata']['upload_timestamp'] = datetime.now().isoformat()
+            
+            # Upload to R2 at root level for easy access by website
+            r2_key = "summary_tickers.json"
+            
+            success = self.upload_json(summary_data, r2_key)
+            
+            if success:
+                total_tickers = summary_data.get('metadata', {}).get('total_tickers', 0)
+                logger.info(f"Successfully uploaded summary tickers to: {r2_key}")
+                logger.info(f"Total tickers: {total_tickers}")
+                logger.info(f"Generation timestamp: {summary_data.get('metadata', {}).get('generated_timestamp', 'N/A')}")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error uploading summary tickers: {e}")
+            return False
 
 
 def main():
     """Example usage of R2 client"""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Upload holdings data to R2")
+    parser.add_argument("-e", "--env", choices=["dev", "prod"], default="dev", 
+                       help="Environment to upload to (default: dev)")
+    args = parser.parse_args()
+    
     try:
         # Initialize R2 client
-        client = R2Client()
+        client = R2Client(bucket=args.env)
         
         # Example: List objects in latest folder
         latest_objects = client.list_objects("latest/")
@@ -531,6 +586,15 @@ def main():
                 logger.info(f"  {ticker}: {status}")
         else:
             logger.warning("No enriched holdings files found to upload")
+        
+        # Upload summary tickers file for website listing
+        logger.info("Uploading summary tickers file...")
+        summary_success = client.upload_summary_tickers("data/summary_tickers.json")
+        
+        if summary_success:
+            logger.info("Summary tickers upload: SUCCESS")
+        else:
+            logger.error("Summary tickers upload: FAILED")
         
     except Exception as e:
         logger.error(f"Error in main: {e}")

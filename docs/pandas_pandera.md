@@ -115,7 +115,7 @@ except pa.errors.SchemaError as e:
 
 ### Function Signatures
 ```python
-from fh.schemas import HoldingsRawDF, HoldingsEnrichedDF
+from fh.internal_schemas.holdings_schema import HoldingsRawDF, HoldingsEnrichedDF
 
 def parse_nport_file(xml_file_path: str) -> tuple[HoldingsRawDF, Dict[str, Any]]:
     """Returns validated raw holdings DataFrame"""

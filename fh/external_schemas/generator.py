@@ -1,380 +1,252 @@
 #!/usr/bin/env python3
 """
-Schema Generator for External API Specifications
+JSON Schema Generator for External API Specifications
 
-This script generates and updates external schema specifications (JSON Schema, TypeScript, OpenAPI)
-based on actual data structures from the fund holdings pipeline.
+This script generates JSON Schema specifications from Pandera schemas 
+defined in fh/internal_schemas/. The internal schemas are the source of truth.
 
 Usage:
     python -m fh.external_schemas.generator
-    python -m fh.external_schemas.generator --csv-file path/to/enriched_holdings.csv
-    python -m fh.external_schemas.generator --validate-only
+    python -m fh.external_schemas.generator --output-file custom_schema.json
 """
 
 import json
 import os
 import sys
 import argparse
-import pandas as pd
+import importlib
+import inspect
 from datetime import datetime
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Type
 from pathlib import Path
 
 # Add parent directory to path for imports
 sys.path.append(str(Path(__file__).parent.parent))
 
-from schemas import HoldingsEnrichedSchema
-from r2_client import R2Client
+import pandera.pandas as pa
+from pandera.typing import DataFrame, Series
 
 
-class ExternalSchemaGenerator:
-    """Generate external API schemas from actual data structures."""
+class JSONSchemaGenerator:
+    """Generate JSON Schema from Pandera DataFrameModel schemas."""
     
-    def __init__(self, schema_dir: Optional[str] = None):
-        """Initialize generator with schema directory path."""
-        if schema_dir is None:
-            schema_dir = Path(__file__).parent
-        self.schema_dir = Path(schema_dir)
+    def __init__(self, output_dir: Optional[str] = None):
+        """Initialize generator with output directory path."""
+        if output_dir is None:
+            output_dir = Path(__file__).parent
+        self.output_dir = Path(output_dir)
+        self.internal_schemas_dir = Path(__file__).parent.parent / "internal_schemas"
         self.timestamp = datetime.now().isoformat()
     
-    def analyze_csv_structure(self, csv_file: str) -> Dict[str, Any]:
+    def discover_schema_files(self) -> List[Path]:
         """
-        Analyze actual CSV file to extract data types and constraints.
+        Discover all Python files in internal_schemas directory that contain schemas.
+        
+        Returns:
+            List of paths to schema files
+        """
+        schema_files = []
+        
+        for file_path in self.internal_schemas_dir.glob("*.py"):
+            # Skip __init__.py
+            if file_path.name == "__init__.py":
+                continue
+            
+            # Only include files that end with "_schema.py"
+            if file_path.name.endswith("_schema.py"):
+                schema_files.append(file_path)
+        
+        return schema_files
+    
+    def import_schemas_from_file(self, file_path: Path) -> List[Type[pa.DataFrameModel]]:
+        """
+        Import all Pandera DataFrameModel schemas from a Python file.
         
         Args:
-            csv_file: Path to enriched holdings CSV file
+            file_path: Path to Python file containing schemas
             
         Returns:
-            Dictionary with analysis results
+            List of Pandera DataFrameModel classes
         """
+        schemas = []
+        
+        # Convert file path to module name
+        relative_path = file_path.relative_to(self.internal_schemas_dir.parent)
+        module_name = str(relative_path.with_suffix("")).replace(os.sep, ".")
+        
         try:
-            # Read CSV file
-            df = pd.read_csv(csv_file)
+            # Import the module
+            module = importlib.import_module(module_name)
             
-            # Convert R2 client to get JSON structure
-            r2_client = R2Client()
-            json_data = r2_client.read_csv_to_json(csv_file)
-            
-            if not json_data:
-                raise ValueError(f"Failed to convert CSV to JSON: {csv_file}")
-            
-            analysis = {
-                "csv_file": csv_file,
-                "total_holdings": len(df),
-                "columns": list(df.columns),
-                "dtypes": df.dtypes.to_dict(),
-                "sample_holding": json_data["holdings"][0] if json_data["holdings"] else {},
-                "metadata_sample": json_data["metadata"],
-                "null_counts": df.isnull().sum().to_dict(),
-                "value_ranges": {},
-                "unique_values": {}
-            }
-            
-            # Analyze numeric columns for ranges
-            numeric_columns = df.select_dtypes(include=['int64', 'float64']).columns
-            for col in numeric_columns:
-                if not df[col].isnull().all():
-                    analysis["value_ranges"][col] = {
-                        "min": float(df[col].min()),
-                        "max": float(df[col].max()),
-                        "mean": float(df[col].mean())
-                    }
-            
-            # Analyze categorical columns for unique values
-            categorical_columns = ['payoff_profile', 'asset_category', 'issuer_category', 
-                                 'investment_country', 'is_restricted_security', 'fair_value_level',
-                                 'is_cash_collateral', 'is_non_cash_collateral', 'is_loan_by_fund']
-            for col in categorical_columns:
-                if col in df.columns:
-                    unique_vals = df[col].dropna().unique().tolist()
-                    analysis["unique_values"][col] = unique_vals[:20]  # Limit for readability
-            
-            return analysis
+            # Find all DataFrameModel classes (including inherited ones)
+            for name, obj in inspect.getmembers(module, inspect.isclass):
+                # Check if it's a Pandera DataFrameModel (directly or through inheritance)
+                if (hasattr(obj, '__mro__') and 
+                    any(base.__name__ == 'DataFrameModel' for base in obj.__mro__)):
+                    # Only include classes defined in this module (not imported ones)
+                    if obj.__module__ == module.__name__:
+                        schemas.append(obj)
+                        print(f"  Found schema: {name}")
             
         except Exception as e:
-            print(f"Error analyzing CSV file {csv_file}: {e}")
-            return {}
+            print(f"Error importing {module_name}: {e}")
+        
+        return schemas
     
-    def generate_json_schema_from_data(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
+    def pandera_to_json_schema(self, schema_class: Type[pa.DataFrameModel]) -> Dict[str, Any]:
         """
-        Generate JSON Schema based on actual data analysis.
+        Convert a Pandera DataFrameModel to JSON Schema format.
         
         Args:
-            analysis: Results from analyze_csv_structure()
+            schema_class: Pandera DataFrameModel class
             
         Returns:
-            Updated JSON Schema dictionary
+            JSON Schema dictionary for the schema
         """
-        # Load existing schema as base
-        json_schema_file = self.schema_dir / "json_schema.json"
+        # Get the schema instance
+        schema_instance = schema_class.to_schema()
         
-        if json_schema_file.exists():
-            with open(json_schema_file, 'r') as f:
-                schema = json.load(f)
-        else:
-            # Basic schema structure if file doesn't exist
-            schema = {
-                "$schema": "http://json-schema.org/draft-07/schema#",
-                "title": "Fund Holdings Response",
-                "type": "object"
+        properties = {}
+        required_fields = []
+        
+        # Process each column in the schema
+        for column_name, column_schema in schema_instance.columns.items():
+            # Extract field information
+            field_type = self._pandera_type_to_json_type(column_schema.dtype)
+            
+            field_def = {
+                "type": field_type,
+                "description": getattr(column_schema, 'description', '')
             }
-        
-        # Update metadata based on actual data
-        if "metadata_sample" in analysis:
-            metadata = analysis["metadata_sample"]
-            if "properties" not in schema:
-                schema["properties"] = {}
-            if "metadata" not in schema["properties"]:
-                schema["properties"]["metadata"] = {"type": "object", "properties": {}}
             
-            # Update with actual metadata fields
-            for key, value in metadata.items():
-                prop_type = "string"
-                if isinstance(value, int):
-                    prop_type = "integer"
-                elif isinstance(value, float):
-                    prop_type = "number"
-                elif isinstance(value, bool):
-                    prop_type = "boolean"
-                
-                schema["properties"]["metadata"]["properties"][key] = {
-                    "type": prop_type,
-                    "description": f"Auto-generated from analysis at {self.timestamp}"
-                }
-        
-        # Update holdings schema based on sample holding
-        if "sample_holding" in analysis:
-            holding = analysis["sample_holding"]
-            if "definitions" not in schema:
-                schema["definitions"] = {}
-            if "holding" not in schema["definitions"]:
-                schema["definitions"]["holding"] = {"type": "object", "properties": {}}
+            # Handle nullable fields
+            if getattr(column_schema, 'nullable', False):
+                if isinstance(field_def["type"], str):
+                    field_def["type"] = [field_def["type"], "null"]
+                else:
+                    field_def["type"].append("null")
+            else:
+                required_fields.append(column_name)
             
-            # Update with actual holding fields
-            for key, value in holding.items():
-                prop_def = {"type": "string"}  # Default
-                
-                if isinstance(value, int):
-                    prop_def = {"type": "integer"}
-                elif isinstance(value, float):
-                    prop_def = {"type": "number"}
-                elif isinstance(value, bool):
-                    prop_def = {"type": "boolean"}
-                elif value is None:
-                    prop_def = {"type": ["string", "null"]}
-                
-                # Add constraints based on analysis
-                if key in analysis.get("unique_values", {}):
-                    unique_vals = analysis["unique_values"][key]
-                    if len(unique_vals) <= 10:  # Only for small sets
-                        prop_def["enum"] = unique_vals
-                
-                if key in analysis.get("value_ranges", {}):
-                    range_info = analysis["value_ranges"][key]
-                    if range_info["min"] >= 0:
-                        prop_def["minimum"] = 0
-                
-                schema["definitions"]["holding"]["properties"][key] = prop_def
+            properties[column_name] = field_def
         
-        return schema
-    
-    def generate_typescript_from_data(self, analysis: Dict[str, Any]) -> str:
-        """
-        Generate TypeScript definitions based on actual data analysis.
-        
-        Args:
-            analysis: Results from analyze_csv_structure()
-            
-        Returns:
-            TypeScript definition string
-        """
-        # Load existing TypeScript as template
-        ts_file = self.schema_dir / "typescript.d.ts"
-        
-        if ts_file.exists():
-            with open(ts_file, 'r') as f:
-                existing_ts = f.read()
-        else:
-            existing_ts = ""
-        
-        # Generate comment with analysis info
-        ts_content = f"""/**
- * TypeScript Type Definitions for Fund Holdings API
- * 
- * Auto-generated from actual data analysis
- * Generated at: {self.timestamp}
- * Source file: {analysis.get('csv_file', 'N/A')}
- * Total holdings analyzed: {analysis.get('total_holdings', 'N/A')}
- */
-
-"""
-        
-        # For now, append the analysis as comments to existing TypeScript
-        ts_content += f"""
-// Data Analysis Results:
-// Columns found: {len(analysis.get('columns', []))}
-// Numeric ranges: {list(analysis.get('value_ranges', {}).keys())}
-// Categorical fields: {list(analysis.get('unique_values', {}).keys())}
-
-"""
-        
-        # Add existing TypeScript content
-        ts_content += existing_ts
-        
-        return ts_content
-    
-    def validate_existing_schemas(self, analysis: Dict[str, Any]) -> Dict[str, List[str]]:
-        """
-        Validate existing schemas against actual data structure.
-        
-        Args:
-            analysis: Results from analyze_csv_structure()
-            
-        Returns:
-            Dictionary with validation results and issues
-        """
-        issues = {
-            "json_schema": [],
-            "typescript": [],
-            "openapi": []
+        # Build the JSON Schema
+        json_schema = {
+            "type": "object",
+            "title": schema_class.__name__,
+            "description": schema_class.__doc__ or f"Schema for {schema_class.__name__}",
+            "properties": properties
         }
         
-        # Check if all columns from actual data are represented in schemas
-        actual_columns = set(analysis.get("columns", []))
+        if required_fields:
+            json_schema["required"] = required_fields
         
-        # Check JSON Schema
-        json_schema_file = self.schema_dir / "json_schema.json"
-        if json_schema_file.exists():
-            with open(json_schema_file, 'r') as f:
-                json_schema = json.load(f)
+        return json_schema
+    
+    def _pandera_type_to_json_type(self, pandera_type) -> str:
+        """
+        Convert Pandera/pandas dtype to JSON Schema type.
+        
+        Args:
+            pandera_type: Pandera dtype
             
-            if "definitions" in json_schema and "holding" in json_schema["definitions"]:
-                schema_props = set(json_schema["definitions"]["holding"].get("properties", {}).keys())
-                missing_in_schema = actual_columns - schema_props
-                extra_in_schema = schema_props - actual_columns
-                
-                if missing_in_schema:
-                    issues["json_schema"].append(f"Missing columns: {missing_in_schema}")
-                if extra_in_schema:
-                    issues["json_schema"].append(f"Extra columns: {extra_in_schema}")
+        Returns:
+            JSON Schema type string
+        """
+        type_str = str(pandera_type).lower()
+        
+        if 'int' in type_str:
+            return "integer"
+        elif 'float' in type_str:
+            return "number"
+        elif 'bool' in type_str:
+            return "boolean"
+        elif 'datetime' in type_str:
+            return "string"  # ISO timestamp string
         else:
-            issues["json_schema"].append("JSON Schema file not found")
-        
-        # Check for data type mismatches
-        if "sample_holding" in analysis:
-            for key, value in analysis["sample_holding"].items():
-                expected_type = type(value).__name__
-                if value is None:
-                    expected_type = "nullable"
-                # Could add more sophisticated type checking here
-        
-        return issues
+            return "string"  # Default to string
     
-    def update_schemas(self, csv_file: Optional[str] = None) -> None:
+    def generate_combined_json_schema(self) -> Dict[str, Any]:
         """
-        Update all schema files based on actual data analysis.
+        Generate a combined JSON Schema from all internal schemas.
+        
+        Returns:
+            Combined JSON Schema dictionary
+        """
+        print("Discovering schema files...")
+        schema_files = self.discover_schema_files()
+        print(f"Found {len(schema_files)} schema files")
+        
+        all_schemas = {}
+        
+        for file_path in schema_files:
+            print(f"\nProcessing {file_path.name}...")
+            schemas = self.import_schemas_from_file(file_path)
+            
+            for schema_class in schemas:
+                schema_name = schema_class.__name__
+                json_schema = self.pandera_to_json_schema(schema_class)
+                all_schemas[schema_name] = json_schema
+        
+        # Create the combined schema
+        combined_schema = {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "title": "Fund Holdings API Schemas",
+            "description": f"Combined JSON Schema for all fund holdings data structures. Generated from Pandera schemas at {self.timestamp}",
+            "type": "object",
+            "definitions": all_schemas,
+            "properties": {
+                # Add top-level properties that reference the definitions
+                schema_name.lower().replace("schema", ""): {
+                    "$ref": f"#/definitions/{schema_name}"
+                }
+                for schema_name in all_schemas.keys()
+            }
+        }
+        
+        return combined_schema
+    
+    def generate_schema_file(self, output_file: Optional[str] = None) -> None:
+        """
+        Generate and save the combined JSON Schema file.
         
         Args:
-            csv_file: Optional path to specific CSV file to analyze
+            output_file: Optional custom output filename
         """
-        print(f"Updating external schemas at {self.timestamp}")
+        print(f"Generating JSON Schema from internal schemas at {self.timestamp}")
         
-        # Analyze actual data if CSV file provided
-        analysis = {}
-        if csv_file:
-            if not os.path.exists(csv_file):
-                print(f"CSV file not found: {csv_file}")
-                return
-            
-            print(f"Analyzing CSV file: {csv_file}")
-            analysis = self.analyze_csv_structure(csv_file)
-            
-            if not analysis:
-                print("Failed to analyze CSV file")
-                return
-            
-            print(f"Analysis complete: {analysis['total_holdings']} holdings, {len(analysis['columns'])} columns")
+        # Generate the combined schema
+        combined_schema = self.generate_combined_json_schema()
         
-        # Update JSON Schema
-        if analysis:
-            print("Updating JSON Schema...")
-            updated_json_schema = self.generate_json_schema_from_data(analysis)
-            
-            json_schema_file = self.schema_dir / "json_schema.json"
-            with open(json_schema_file, 'w') as f:
-                json.dump(updated_json_schema, f, indent=2)
-            
-            print(f"JSON Schema updated: {json_schema_file}")
+        # Determine output file path
+        if output_file:
+            output_path = self.output_dir / output_file
+        else:
+            output_path = self.output_dir / "combined_schema.json"
         
-        # Update TypeScript
-        if analysis:
-            print("Updating TypeScript definitions...")
-            updated_typescript = self.generate_typescript_from_data(analysis)
-            
-            ts_file = self.schema_dir / "typescript.d.ts"
-            with open(ts_file, 'w') as f:
-                f.write(updated_typescript)
-            
-            print(f"TypeScript definitions updated: {ts_file}")
+        # Write the schema file
+        with open(output_path, 'w') as f:
+            json.dump(combined_schema, f, indent=2)
         
-        print("Schema update complete!")
-    
-    def validate_schemas(self, csv_file: Optional[str] = None) -> None:
-        """
-        Validate existing schemas against actual data.
+        print(f"\nJSON Schema generated: {output_path}")
+        print(f"Total schemas included: {len(combined_schema['definitions'])}")
         
-        Args:
-            csv_file: Optional path to specific CSV file to validate against
-        """
-        print(f"Validating external schemas at {self.timestamp}")
-        
-        if not csv_file:
-            print("No CSV file provided for validation")
-            return
-        
-        if not os.path.exists(csv_file):
-            print(f"CSV file not found: {csv_file}")
-            return
-        
-        print(f"Analyzing CSV file: {csv_file}")
-        analysis = self.analyze_csv_structure(csv_file)
-        
-        if not analysis:
-            print("Failed to analyze CSV file")
-            return
-        
-        print(f"Validating schemas against: {analysis['total_holdings']} holdings, {len(analysis['columns'])} columns")
-        
-        # Validate schemas
-        issues = self.validate_existing_schemas(analysis)
-        
-        # Report results
-        for schema_type, schema_issues in issues.items():
-            print(f"\n{schema_type.upper()} Validation:")
-            if schema_issues:
-                for issue in schema_issues:
-                    print(f"  ❌ {issue}")
-            else:
-                print(f"  ✅ No issues found")
-        
-        print("\nValidation complete!")
+        # Print summary
+        for schema_name in combined_schema['definitions'].keys():
+            field_count = len(combined_schema['definitions'][schema_name].get('properties', {}))
+            print(f"  - {schema_name}: {field_count} fields")
 
 
 def main():
     """Main CLI entry point."""
-    parser = argparse.ArgumentParser(description="Generate external API schemas from fund holdings data")
-    parser.add_argument("--csv-file", help="Path to enriched holdings CSV file for analysis")
-    parser.add_argument("--validate-only", action="store_true", help="Only validate existing schemas")
-    parser.add_argument("--schema-dir", help="Directory containing schema files")
+    parser = argparse.ArgumentParser(description="Generate JSON Schema from internal Pandera schemas")
+    parser.add_argument("--output-file", help="Custom output filename (default: combined_schema.json)")
+    parser.add_argument("--output-dir", help="Directory for output file")
     
     args = parser.parse_args()
     
-    generator = ExternalSchemaGenerator(args.schema_dir)
-    
-    if args.validate_only:
-        generator.validate_schemas(args.csv_file)
-    else:
-        generator.update_schemas(args.csv_file)
+    generator = JSONSchemaGenerator(args.output_dir)
+    generator.generate_schema_file(args.output_file)
 
 
 if __name__ == "__main__":
