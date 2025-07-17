@@ -5,7 +5,11 @@
       "Bash(uv run:*)",
       "Bash(mv:*)",
       "Bash(grep:*)",
-      "Bash(rm:*)"
+      "Bash(rm:*)",
+      "Bash(claude mcp)",
+      "Bash(claude mcp:*)",
+      "Bash(npx mcp-remote:*)",
+      "mcp__linear__list_my_issues"
     ],
     "deny": []
   }

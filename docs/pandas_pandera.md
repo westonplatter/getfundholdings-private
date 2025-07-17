@@ -23,6 +23,7 @@ class HoldingsEnrichedSchema(HoldingsRawSchema):
 ```
 
 **Benefits:**
+
 - Inheritance reduces duplication
 - Clear separation between raw and enriched data
 - Easy to extend with additional enrichment stages
@@ -30,6 +31,7 @@ class HoldingsEnrichedSchema(HoldingsRawSchema):
 ### Field Type Principles
 
 #### Datetime Fields
+
 - **Use timezone-aware datetime objects** for timestamps
 - **Store in UTC** for consistency across environments
 - **Let pandas handle serialization** to ISO 8601 format
@@ -44,6 +46,7 @@ enrichment_datetime: Series[str] = pa.Field()  # Less type-safe
 ```
 
 #### Nullable Fields
+
 - **Use `nullable=True`** in Field definition, not `Optional[Type]` in Series annotation
 - **Specify base type** in Series annotation
 
@@ -56,6 +59,7 @@ cusip: Series[Optional[str]] = pa.Field(nullable=True)  # Causes pandera errors
 ```
 
 #### Numeric Fields
+
 - **Avoid value constraints** for external data sources (SEC filings)
 - **Focus on type validation** rather than business rule validation
 - **Allow negative values** for financial data (short positions, derivatives)
@@ -69,6 +73,7 @@ value_usd: Series[float] = pa.Field(ge=0)  # SEC data may have negatives
 ```
 
 #### String Fields
+
 - **No value constraints** on regulatory data
 - **Document expected values** in descriptions only
 
@@ -83,11 +88,13 @@ is_restricted_security: Series[str] = pa.Field(isin=["Y", "N"])  # SEC may use o
 ## Validation Strategy
 
 ### When to Validate
+
 - **Always validate** DataFrames returned from parsing functions
 - **Validate before** writing to files
 - **Validate after** loading from files (optional, for debugging)
 
 ### Validation Functions
+
 ```python
 def validate_holdings_raw(df: pd.DataFrame) -> pd.DataFrame:
     """Validate raw holdings against schema"""
@@ -99,6 +106,7 @@ def validate_holdings_enriched(df: pd.DataFrame) -> pd.DataFrame:
 ```
 
 ### Error Handling
+
 - **Log validation errors** but continue processing when possible
 - **Return empty DataFrames** on critical validation failures
 - **Use specific error messages** for debugging
@@ -114,17 +122,19 @@ except pa.errors.SchemaError as e:
 ## Type Annotations
 
 ### Function Signatures
+
 ```python
 from fh.internal_schemas.holdings_schema import HoldingsRawDF, HoldingsEnrichedDF
 
 def parse_nport_file(xml_file_path: str) -> tuple[HoldingsRawDF, Dict[str, Any]]:
     """Returns validated raw holdings DataFrame"""
-    
+
 def enrich_with_tickers(holdings_df: HoldingsRawDF) -> HoldingsEnrichedDF:
     """Takes raw holdings, returns enriched holdings"""
 ```
 
 ### Benefits of Type Annotations
+
 - **IDE support** with autocomplete and type checking
 - **Documentation** of expected DataFrame structure
 - **Runtime validation** when combined with pandera
@@ -132,6 +142,7 @@ def enrich_with_tickers(holdings_df: HoldingsRawDF) -> HoldingsEnrichedDF:
 ## Configuration
 
 ### Schema Configuration
+
 ```python
 class Config:
     strict = True      # Fail on unexpected columns
@@ -139,12 +150,14 @@ class Config:
 ```
 
 **Rationale:**
+
 - `strict=True`: Catches schema drift early
 - `coerce=True`: Handles string→numeric conversions from XML/CSV
 
 ## File Format Compatibility
 
 ### CSV Export/Import
+
 - **Pandas handles timezone serialization** automatically
 - **Use `quoting=1` (QUOTE_ALL)** for consistent CSV format
 - **Preserve index=False** for clean CSVs
@@ -154,6 +167,7 @@ df.to_csv(filename, index=False, quoting=1)
 ```
 
 ### NaN Handling for JSON Export
+
 - **Replace NaN values with empty strings** for JSON compatibility
 - **Apply before JSON serialization** to ensure valid JSON output
 
@@ -166,11 +180,13 @@ holdings_data = df.to_dict('records')  # Now contains "" instead of NaN
 ```
 
 **Rationale:**
+
 - JSON standard doesn't support NaN values
 - Empty strings provide consistent null representation
 - Maintains data structure while ensuring JSON validity
 
 ### Parquet Support
+
 - **Native datetime with timezone support**
 - **Better type preservation** than CSV
 - **Smaller file sizes** for large datasets
@@ -178,12 +194,15 @@ holdings_data = df.to_dict('records')  # Now contains "" instead of NaN
 ## Metadata Columns
 
 ### Required Metadata
+
 Every DataFrame should include:
+
 - `source_file`: Originating XML filename
 - `report_period_date`: N-PORT report date
 - `enrichment_datetime`: Processing timestamp (for enriched data)
 
 ### Metadata Principles
+
 - **Add metadata early** in the pipeline
 - **Preserve through transformations**
 - **Use for debugging and traceability**
@@ -191,50 +210,55 @@ Every DataFrame should include:
 ## Example Implementation
 
 ### Raw Holdings Parser
+
 ```python
 def to_dataframes(self) -> tuple[HoldingsRawDF, Dict[str, Any]]:
     """Parse XML and return validated holdings DataFrame"""
     holdings_df = pd.DataFrame(holdings_data)
-    
+
     # Add required metadata
     holdings_df['source_file'] = os.path.basename(self.xml_file_path)
     holdings_df['report_period_date'] = fund_info.get('report_period_date', '')
-    
+
     # Validate against schema
     holdings_df = validate_holdings_raw(holdings_df)
-    
+
     return holdings_df, fund_info
 ```
 
 ### Enrichment Process
+
 ```python
 def enrich_with_tickers(holdings_df: HoldingsRawDF) -> HoldingsEnrichedDF:
     """Enrich raw holdings with ticker data"""
     enriched_df = holdings_df.copy()
     enriched_df['ticker'] = None
     enriched_df['enrichment_datetime'] = datetime.now(timezone.utc)
-    
+
     # Perform ticker lookup...
-    
+
     # Validate enriched result
     enriched_df = validate_holdings_enriched(enriched_df)
-    
+
     return enriched_df
 ```
 
 ## Common Patterns
 
 ### Schema Evolution
+
 - **Add new fields** to enriched schema as needed
 - **Maintain backward compatibility** with raw schema
 - **Version schemas** if breaking changes needed
 
 ### Performance Considerations
+
 - **Validate once per processing stage** (not repeatedly)
 - **Use lazy validation** for large DataFrames when possible
 - **Consider chunked processing** for very large datasets
 
 ### Testing
+
 - **Test with real SEC data** to catch edge cases
 - **Validate schema assumptions** against actual N-PORT content
 - **Test both valid and invalid data scenarios**
@@ -242,6 +266,7 @@ def enrich_with_tickers(holdings_df: HoldingsRawDF) -> HoldingsEnrichedDF:
 ## Current Schema Status
 
 ### HoldingsRawSchema (24 columns)
+
 - Security identification: name, lei, title, cusip, isin, other_id, other_id_desc
 - Position data: balance, units, currency, value_usd, percent_value
 - Classification: payoff_profile, asset_category, issuer_category, investment_country
@@ -250,6 +275,7 @@ def enrich_with_tickers(holdings_df: HoldingsRawDF) -> HoldingsEnrichedDF:
 - Metadata: source_file, report_period_date
 
 ### HoldingsEnrichedSchema (26 columns)
+
 - All raw schema fields
 - Enrichment: ticker, enrichment_datetime
 

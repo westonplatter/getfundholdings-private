@@ -5,16 +5,16 @@ description = "SEC EDGAR data fetcher for fund holdings - containerized data pip
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "requests>=2.31.0",
-    "beautifulsoup4>=4.12.0",
-    "lxml>=4.9.0",
-    "loguru>=0.7.3",
-    "pytest>=7.4.0",
-    "pandas>=2.3.0",
-    "pandera>=0.25.0",
-    "boto3>=1.39.4",
-    "python-dotenv>=1.1.1",
-    "tqdm>=4.67.1",
+  "requests>=2.31.0",
+  "beautifulsoup4>=4.12.0",
+  "lxml>=4.9.0",
+  "loguru>=0.7.3",
+  "pytest>=7.4.0",
+  "pandas>=2.3.0",
+  "pandera>=0.25.0",
+  "boto3>=1.39.4",
+  "python-dotenv>=1.1.1",
+  "tqdm>=4.67.1",
 ]
 
 [build-system]
@@ -30,6 +30,6 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 markers = [
-    "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
-    "live: marks tests that make live API calls (deselect with '-m \"not live\"')"
+  "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
+  "live: marks tests that make live API calls (deselect with '-m \"not live\"')",
 ]
