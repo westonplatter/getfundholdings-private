@@ -10,13 +10,17 @@ import json
 import logging
 import os
 import time
+from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional
 from urllib.parse import urljoin
 
 import pandas as pd
 import requests
+from dotenv import load_dotenv
 from loguru import logger
 from tqdm import tqdm
+
+from fh.db_models import DatabaseManager, SecurityMappingService
 
 
 class OpenFIGIClient:
@@ -26,34 +30,64 @@ class OpenFIGIClient:
     """
 
     def __init__(
-        self, api_key: Optional[str] = None, cache_file: str = "cusip_ticker_cache.json"
+        self, 
+        api_key: Optional[str] = None, 
+        db_url: Optional[str] = None,
+        cache_max_age_days: int = 60,
+        enable_cache: bool = True
     ):
         """
         Initialize OpenFIGI API client.
 
         Args:
             api_key: Optional API key for higher rate limits
-            cache_file: Path to cache file for CUSIP-to-ticker mappings
+            db_url: Database URL for caching (uses DATABASE_URL env var if None)
+            cache_max_age_days: Maximum age in days before cache entries are considered stale
+            enable_cache: Whether to enable database caching
         """
+        # Load environment variables
+        load_dotenv()
+        
         self.api_key = api_key
-        self.cache_file = cache_file
+        self.cache_max_age_days = cache_max_age_days
         self.base_url = "https://api.openfigi.com"
         self.mapping_url = "https://api.openfigi.com/v3/mapping"
 
-        # Rate limiting: 25 requests per minute without API key
+        # Database setup
+        if enable_cache:
+            database_url = db_url or os.getenv("DATABASE_URL")
+            if database_url:
+                try:
+                    self.db_manager = DatabaseManager(database_url)
+                    self.mapping_service = SecurityMappingService(self.db_manager)
+                    logger.info("Database cache enabled")
+                except Exception as e:
+                    logger.warning(f"Failed to connect to database: {e}")
+                    logger.info("Continuing with API-only mode")
+                    self.db_manager = None
+                    self.mapping_service = None
+            else:
+                logger.info("No DATABASE_URL found, continuing with API-only mode")
+                self.db_manager = None
+                self.mapping_service = None
+        else:
+            self.db_manager = None
+            self.mapping_service = None
+
+        # Rate limiting: 25 requests per 7 seconds
         self.last_request_time = 0
-        self.min_interval = 60 / 25  # 2.4 seconds between requests
+        self.min_interval = 7 / 25  # 0.28 seconds between requests
 
         # Setup session with proper headers
         self.session = requests.Session()
         self._setup_headers()
 
-        # Initialize cache
-        self.cache = self._load_cache()
+        # Legacy cache support (deprecated)
+        self.cache_file = "cusip_ticker_cache.json"  # For backward compatibility
+        self.cache = self._load_cache()  # Keep for migration purposes
 
         # Setup logging
         logging.basicConfig(level=logging.INFO)
-        # logger = logging.getLogger(__name__)
 
     def _setup_headers(self):
         """Setup HTTP headers for OpenFIGI API requests."""
@@ -66,7 +100,7 @@ class OpenFIGIClient:
         self.session.headers.update(headers)
 
     def _rate_limit(self):
-        """Enforce rate limiting for OpenFIGI API (25 requests per minute)."""
+        """Enforce rate limiting for OpenFIGI API (25 requests per 7 seconds)."""
         current_time = time.time()
         time_since_last = current_time - self.last_request_time
 
@@ -111,7 +145,7 @@ class OpenFIGIClient:
                 # Handle rate limiting
                 if response.status_code == 429:
                     if attempt < max_retries:
-                        backoff_time = min(60, (2**attempt) * 5)  # Exponential backoff
+                        backoff_time = min(30, (2**attempt) * 2)  # Exponential backoff
                         logger.warning(
                             f"Rate limit exceeded, waiting {backoff_time} seconds..."
                         )
@@ -176,9 +210,129 @@ class OpenFIGIClient:
 
     def clear_cache(self):
         """Clear all cached mappings."""
+        cleared_count = 0
+        
+        # Clear database cache
+        if self.mapping_service:
+            try:
+                cleared_count = self.mapping_service.clear_cache()
+                logger.info(f"Cleared {cleared_count} database cache entries")
+            except Exception as e:
+                logger.warning(f"Failed to clear database cache: {e}")
+        
+        # Clear legacy JSON cache
+        legacy_count = len(self.cache)
         self.cache.clear()
         self._save_cache()
-        logger.info("Cache cleared")
+        
+        total_cleared = cleared_count + legacy_count
+        logger.info(f"Cache cleared: {total_cleared} total entries ({cleared_count} database, {legacy_count} legacy)")
+    
+    def refresh_stale_cache_entries(self, max_age_days: int = None) -> int:
+        """
+        Refresh stale cache entries by re-fetching from API.
+        
+        Args:
+            max_age_days: Maximum age in days before considering entry stale
+            
+        Returns:
+            Number of entries refreshed
+        """
+        if not self.mapping_service:
+            logger.warning("Database cache not available, cannot refresh stale entries")
+            return 0
+        
+        max_age = max_age_days or self.cache_max_age_days
+        
+        try:
+            stale_mappings = self.mapping_service.find_stale_mappings(max_age)
+            logger.info(f"Found {len(stale_mappings)} stale cache entries to refresh")
+            
+            refreshed_count = 0
+            for mapping in stale_mappings:
+                try:
+                    logger.debug(f"Refreshing {mapping.identifier_type} {mapping.identifier_value}")
+                    
+                    # Re-fetch from API
+                    if mapping.identifier_type == 'CUSIP':
+                        new_ticker = self._fetch_ticker_from_api(mapping.identifier_value)
+                    else:  # ISIN
+                        new_ticker = self._fetch_ticker_from_api_isin(mapping.identifier_value)
+                    
+                    # Update cache
+                    self.mapping_service.create_or_update_mapping(
+                        mapping.identifier_type, 
+                        mapping.identifier_value, 
+                        new_ticker, 
+                        has_no_results=(new_ticker is None)
+                    )
+                    refreshed_count += 1
+                    
+                    logger.debug(f"Refreshed {mapping.identifier_type} {mapping.identifier_value} -> {new_ticker}")
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to refresh {mapping.identifier_type} {mapping.identifier_value}: {e}")
+            
+            logger.info(f"Successfully refreshed {refreshed_count}/{len(stale_mappings)} stale cache entries")
+            return refreshed_count
+            
+        except Exception as e:
+            logger.error(f"Failed to refresh stale cache entries: {e}")
+            return 0
+    
+    def migrate_json_cache_to_postgres(self, json_file_path: str = None) -> int:
+        """
+        Migrate existing JSON cache data to Postgres database.
+        
+        Args:
+            json_file_path: Path to JSON cache file (uses default if None)
+            
+        Returns:
+            Number of entries migrated
+        """
+        if not self.mapping_service:
+            logger.warning("Database cache not available, cannot migrate JSON cache")
+            return 0
+        
+        file_path = json_file_path or self.cache_file
+        
+        if not os.path.exists(file_path):
+            logger.warning(f"JSON cache file not found: {file_path}")
+            return 0
+        
+        try:
+            with open(file_path, 'r') as f:
+                json_cache = json.load(f)
+            
+            logger.info(f"Migrating {len(json_cache)} entries from JSON cache to database")
+            
+            migrated_count = 0
+            for identifier, ticker in json_cache.items():
+                try:
+                    # Determine identifier type based on length
+                    if len(identifier) == 9:
+                        identifier_type = 'CUSIP'
+                    elif len(identifier) == 12:
+                        identifier_type = 'ISIN'
+                    else:
+                        logger.warning(f"Unknown identifier format: {identifier}")
+                        continue
+                    
+                    # Migrate to database
+                    self.mapping_service.create_or_update_mapping(
+                        identifier_type, identifier, ticker, has_no_results=False
+                    )
+                    migrated_count += 1
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to migrate {identifier}: {e}")
+            
+            logger.info(f"Successfully migrated {migrated_count}/{len(json_cache)} entries from JSON to database")
+            return migrated_count
+            
+        except Exception as e:
+            logger.error(f"Failed to migrate JSON cache: {e}")
+            return 0
 
     def get_ticker_from_cusip(self, cusip: str) -> Optional[str]:
         """
@@ -194,15 +348,36 @@ class OpenFIGIClient:
             logger.warning(f"Invalid CUSIP format: {cusip} (type: {type(cusip)})")
             return None
 
-        # Check cache first
+        # Try database cache first
+        if self.mapping_service:
+            mapping = self.mapping_service.get_active_mapping('CUSIP', cusip)
+            if mapping:
+                if mapping.has_no_results:
+                    logger.debug(f"Database cache hit: CUSIP {cusip} has no results")
+                    return None
+                else:
+                    logger.debug(f"Database cache hit: CUSIP {cusip} -> {mapping.ticker}")
+                    return mapping.ticker
+
+        # Fallback to legacy JSON cache
         if cusip in self.cache:
-            # logger.debug(f"Cache hit for CUSIP {cusip}: {self.cache[cusip]}")
+            logger.debug(f"Legacy cache hit for CUSIP {cusip}: {self.cache[cusip]}")
             return self.cache[cusip]
 
         # Make API request
         ticker = self._fetch_ticker_from_api(cusip)
 
-        # Cache only successful results (avoid storing null values)
+        # Cache result in database
+        if self.mapping_service:
+            try:
+                self.mapping_service.create_or_update_mapping(
+                    'CUSIP', cusip, ticker, has_no_results=(ticker is None)
+                )
+                logger.debug(f"Cached result in database: CUSIP {cusip} -> {ticker}")
+            except Exception as e:
+                logger.warning(f"Failed to cache result in database: {e}")
+
+        # Fallback to legacy cache
         if ticker is not None:
             self.cache[cusip] = ticker
             self._save_cache()
@@ -223,14 +398,36 @@ class OpenFIGIClient:
             logger.warning(f"Invalid ISIN format: {isin} (type: {type(isin)})")
             return None
 
-        # Check cache first
+        # Try database cache first
+        if self.mapping_service:
+            mapping = self.mapping_service.get_active_mapping('ISIN', isin)
+            if mapping:
+                if mapping.has_no_results:
+                    logger.debug(f"Database cache hit: ISIN {isin} has no results")
+                    return None
+                else:
+                    logger.debug(f"Database cache hit: ISIN {isin} -> {mapping.ticker}")
+                    return mapping.ticker
+
+        # Fallback to legacy JSON cache
         if isin in self.cache:
+            logger.debug(f"Legacy cache hit for ISIN {isin}: {self.cache[isin]}")
             return self.cache[isin]
 
         # Make API request
         ticker = self._fetch_ticker_from_api_isin(isin)
 
-        # Cache only successful results (avoid storing null values)
+        # Cache result in database
+        if self.mapping_service:
+            try:
+                self.mapping_service.create_or_update_mapping(
+                    'ISIN', isin, ticker, has_no_results=(ticker is None)
+                )
+                logger.debug(f"Cached result in database: ISIN {isin} -> {ticker}")
+            except Exception as e:
+                logger.warning(f"Failed to cache result in database: {e}")
+
+        # Fallback to legacy cache
         if ticker is not None:
             self.cache[isin] = ticker
             self._save_cache()
@@ -487,16 +684,21 @@ class OpenFIGIClient:
 
     def get_cache_stats(self) -> Dict[str, int]:
         """Get cache statistics."""
-        total_cached = len(self.cache)
-        # Since we no longer cache null values, all cached entries are successful
-        found_cached = total_cached
-        not_found_cached = 0
+        if self.mapping_service:
+            # Use database cache stats
+            return self.mapping_service.get_cache_stats()
+        else:
+            # Fallback to legacy JSON cache stats
+            total_cached = len(self.cache)
+            # Since we no longer cache null values in JSON, all cached entries are successful
+            found_cached = total_cached
+            not_found_cached = 0
 
-        return {
-            "total_cached": total_cached,
-            "found_cached": found_cached,
-            "not_found_cached": not_found_cached,
-        }
+            return {
+                "total_cached": total_cached,
+                "found_cached": found_cached,
+                "not_found_cached": not_found_cached,
+            }
 
 
 def create_manual_cusip_mappings() -> Dict[str, str]:

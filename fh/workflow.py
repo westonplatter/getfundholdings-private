@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
+from dotenv import load_dotenv
 from loguru import logger
 from tqdm import tqdm
 
@@ -20,11 +21,63 @@ from fh.openfigi_client import OpenFIGIClient
 from fh.sec_client import SECHTTPClient
 
 CIK_MAP = {
-    # fund issuer => cik
+    # Vanguard
+    "The Vanguard Group, Inc.": "0000102909",
+    "Vanguard Advisers, Inc.": "0000862084",
+    "Vanguard Marketing Corporation": "0000862110",
+    
+    # SPDR / State Street
+    "State Street Corporation": "0000093751",
+    "State Street Global Advisors Trust Company": "0000934647",
+    "SPDR S&P 500 ETF Trust": "0000884394",
+    "State Street Global Advisors Funds Management": "0001064641",
+    
+    # iShares / BlackRock
     "iShares Trust": "1100663",
     "iShares, Inc.": "0000930667",
-    "jpmorgan": "0001485894",
+    "BlackRock, Inc.": "0001364742",
+    "BlackRock Fund Advisors": "0001006249",
+    "BlackRock Advisors LLC": "0001006250",
     "blackrock": "0001761055",
+    
+    # Invesco
+    "Invesco Ltd.": "0000914208",
+    "Invesco Advisers, Inc.": "0000914648",
+    "Invesco Capital Management LLC": "0000914649",
+    
+    # Schwab
+    "Charles Schwab Corporation": "0000316709",
+    "Charles Schwab Investment Management": "0001064642",
+    "Schwab Strategic Trust": "0001064646",
+    
+    # Dimensional
+    "Dimensional Fund Advisors LP": "0000874761",
+    "DFA Investment Dimensions Group Inc.": "0000874762",
+    
+    # JPMorgan
+    "JPMorgan Chase & Co.": "0000019617",
+    "J.P. Morgan Investment Management Inc.": "0000895421",
+    "jpmorgan": "0001485894",
+    
+    # VanEck
+    "VanEck Associates Corporation": "0000912471",
+    "Market Vectors ETF Trust": "0001345413",
+    
+    # ProShares
+    "ProShare Advisors LLC": "0001174610",
+    "ProShares Trust": "0001174612",
+    
+    # Fidelity
+    "FMR LLC": "0000315066",
+    "Fidelity Management & Research Company": "0000315067",
+    
+    # Grayscale
+    "Grayscale Investments, LLC": "0001588489",
+    "Grayscale Bitcoin Trust": "0001588489",
+    
+    # Janus Henderson
+    "Janus Henderson Group plc": "0001691415",
+    "Janus Capital Management LLC": "0000886982",
 }
 
 
@@ -52,9 +105,16 @@ class FundHoldingsWorkflow:
         """Initialize workflow with configuration."""
         self.config = config
         self.sec_client = SECHTTPClient(user_agent=config.user_agent)
-        self.openfigi_client = (
-            OpenFIGIClient() if config.enable_ticker_enrichment else None
-        )
+        
+        # Load environment variables
+        load_dotenv(".env.prod")
+        
+        # Initialize OpenFIGI client with API key from environment
+        if config.enable_ticker_enrichment:
+            api_key = os.getenv("OPENFIGI_API_KEY")
+            self.openfigi_client = OpenFIGIClient(api_key=api_key)
+        else:
+            self.openfigi_client = None
 
     def run(self) -> Dict[str, Any]:
         """
@@ -650,7 +710,7 @@ def main():
         max_series_per_cik=None,
         max_filings_per_series=1,
         # interested_etf_tickers=["JEPI", "JEPQ", "IVV"]
-        interested_etf_tickers=["URTH"],
+        # interested_etf_tickers=["URTH"],
     )
 
     workflow = FundHoldingsWorkflow(config)
