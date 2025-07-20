@@ -11,7 +11,11 @@
       "Bash(npx mcp-remote:*)",
       "mcp__linear__list_my_issues",
       "WebFetch(domain:etfdb.com)",
-      "WebFetch(domain:fastapi.tiangolo.com)"
+      "WebFetch(domain:fastapi.tiangolo.com)",
+      "WebFetch(domain:www.sec.gov)",
+      "Bash(find:*)",
+      "Bash(true)",
+      "Bash(ls:*)"
     ],
     "deny": []
   }

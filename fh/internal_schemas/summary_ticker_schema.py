@@ -27,6 +27,7 @@ class SummaryTickerSchema(pa.DataFrameModel):
     # SEC identification
     cik: Series[str] = pa.Field(description="10-digit SEC CIK identifier")
     series_id: Series[str] = pa.Field(description="SEC series identifier")
+    issuer_name: Series[str] = pa.Field(description="Official issuer name from CIK mapping (e.g., 'Simplify Asset Management Inc.')")
 
     # Latest data file metadata
     latest_report_date: Series[str] = pa.Field(
@@ -36,6 +37,16 @@ class SummaryTickerSchema(pa.DataFrameModel):
         description="Latest file timestamp (YYYYMMDD_HHMMSS format)"
     )
     latest_file: Series[str] = pa.Field(description="Latest enriched holdings filename")
+
+    # Fund metrics
+    aum: Series[float] = pa.Field(
+        nullable=True, 
+        description="Assets Under Management in USD (sum of all holding values)"
+    )
+    holdings_count: Series[int] = pa.Field(
+        nullable=True,
+        description="Total number of holdings in the latest filing"
+    )
 
     # Processing metadata
     data_updated: Series[str] = pa.Field(

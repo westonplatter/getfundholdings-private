@@ -13,7 +13,11 @@ import re
 from datetime import datetime
 from typing import Dict, List, Optional
 
+import pandas as pd
 from loguru import logger
+
+# Import CIK mapping for issuer names
+from fh.constants import CIK_MAP
 
 
 def find_latest_enriched_holdings_by_ticker(data_dir: str = "data") -> Dict[str, Dict]:
@@ -151,6 +155,74 @@ def load_series_data(data_dir: str = "data") -> Dict[str, Dict]:
     return series_metadata
 
 
+def get_issuer_name_from_cik(cik: str) -> str:
+    """
+    Get issuer name from CIK using the CIK_MAP.
+    
+    Args:
+        cik: CIK identifier
+        
+    Returns:
+        Issuer name or 'Unknown' if not found
+    """
+    # Remove leading zeros and format as needed
+    cik_clean = cik.lstrip('0')
+    
+    for issuer_name, mapped_cik in CIK_MAP.items():
+        if mapped_cik.lstrip('0') == cik_clean:
+            return issuer_name
+    
+    logger.warning(f"No issuer name found for CIK: {cik}")
+    return "Unknown"
+
+
+def calculate_fund_metrics(file_path: str) -> tuple[Optional[float], Optional[int]]:
+    """
+    Calculate AUM and holdings count from enriched holdings file.
+    
+    Args:
+        file_path: Path to enriched holdings CSV file
+        
+    Returns:
+        Tuple of (aum, holdings_count) or (None, None) if error
+    """
+    try:
+        if not os.path.exists(file_path):
+            logger.warning(f"Holdings file does not exist: {file_path}")
+            return None, None
+            
+        # Read the holdings data
+        holdings_df = pd.read_csv(file_path)
+        
+        if holdings_df.empty:
+            logger.warning(f"Empty holdings file: {file_path}")
+            return None, None
+        
+        # Calculate holdings count
+        holdings_count = len(holdings_df)
+        
+        # Calculate AUM (sum of value_usd column)
+        aum = None
+        if 'value_usd' in holdings_df.columns:
+            # Filter out non-numeric values and sum
+            value_series = pd.to_numeric(holdings_df['value_usd'], errors='coerce')
+            aum = value_series.sum()
+            
+            # If AUM is NaN or negative, set to None
+            if pd.isna(aum) or aum < 0:
+                aum = None
+        else:
+            logger.warning(f"No 'value_usd' column found in {file_path}")
+            
+        aum_str = f"${aum:,.2f}" if aum is not None else "N/A"
+        logger.debug(f"Calculated metrics for {os.path.basename(file_path)}: AUM={aum_str}, Holdings={holdings_count}")
+        return aum, holdings_count
+        
+    except Exception as e:
+        logger.error(f"Error calculating fund metrics for {file_path}: {e}")
+        return None, None
+
+
 def create_summary_tickers_data(data_dir: str = "data") -> List[Dict]:
     """
     Create summary ticker data combining enriched holdings files and series metadata.
@@ -171,27 +243,38 @@ def create_summary_tickers_data(data_dir: str = "data") -> List[Dict]:
 
     for ticker, file_info in latest_files.items():
         series_id = file_info["series_id"]
+        cik = file_info["cik"]
 
         # Get fund metadata from series data
         metadata = series_metadata.get(series_id, {})
         fund_name = metadata.get("fund_name", "")
+        
+        # Get issuer name from CIK mapping
+        issuer_name = get_issuer_name_from_cik(cik)
+        
+        # Calculate fund metrics from holdings data
+        aum, holdings_count = calculate_fund_metrics(file_info["file_path"])
 
         # Create summary entry
         ticker_summary = {
             "ticker": ticker,
             "name": fund_name,
             "title": fund_name,  # Using fund name as title for now
-            "cik": file_info["cik"],
+            "cik": cik,
             "series_id": series_id,
+            "issuer_name": issuer_name,
             "latest_report_date": file_info["report_date"],
             "latest_timestamp": file_info["timestamp"],
             "latest_file": file_info["filename"],
+            "aum": aum,
+            "holdings_count": holdings_count,
             "data_updated": datetime.now().isoformat(),
         }
 
         summary_data.append(ticker_summary)
 
-        logger.info(f"Added {ticker}: {fund_name}")
+        aum_display = f"${aum:,.2f}" if aum is not None else "N/A"
+        logger.info(f"Added {ticker}: {fund_name} ({issuer_name}) - AUM: {aum_display}, Holdings: {holdings_count}")
 
     # Sort by ticker for consistent output
     summary_data.sort(key=lambda x: x["ticker"])

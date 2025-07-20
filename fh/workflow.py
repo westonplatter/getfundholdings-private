@@ -6,7 +6,9 @@ This module provides a clean interface to execute the complete pipeline:
 CIK → Series/Class → N-PORT Filings → XML Data → Holdings → Enriched Data
 """
 
+import argparse
 import os
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -17,68 +19,9 @@ from dotenv import load_dotenv
 from loguru import logger
 from tqdm import tqdm
 
+from fh.constants import CIK_MAP
 from fh.openfigi_client import OpenFIGIClient
 from fh.sec_client import SECHTTPClient
-
-CIK_MAP = {
-    # Vanguard
-    "The Vanguard Group, Inc.": "0000102909",
-    "Vanguard Advisers, Inc.": "0000862084",
-    "Vanguard Marketing Corporation": "0000862110",
-    
-    # SPDR / State Street
-    "State Street Corporation": "0000093751",
-    "State Street Global Advisors Trust Company": "0000934647",
-    "SPDR S&P 500 ETF Trust": "0000884394",
-    "State Street Global Advisors Funds Management": "0001064641",
-    
-    # iShares / BlackRock
-    "iShares Trust": "1100663",
-    "iShares, Inc.": "0000930667",
-    "BlackRock, Inc.": "0001364742",
-    "BlackRock Fund Advisors": "0001006249",
-    "BlackRock Advisors LLC": "0001006250",
-    "blackrock": "0001761055",
-    
-    # Invesco
-    "Invesco Ltd.": "0000914208",
-    "Invesco Advisers, Inc.": "0000914648",
-    "Invesco Capital Management LLC": "0000914649",
-    
-    # Schwab
-    "Charles Schwab Corporation": "0000316709",
-    "Charles Schwab Investment Management": "0001064642",
-    "Schwab Strategic Trust": "0001064646",
-    
-    # Dimensional
-    "Dimensional Fund Advisors LP": "0000874761",
-    "DFA Investment Dimensions Group Inc.": "0000874762",
-    
-    # JPMorgan
-    "JPMorgan Chase & Co.": "0000019617",
-    "J.P. Morgan Investment Management Inc.": "0000895421",
-    "jpmorgan": "0001485894",
-    
-    # VanEck
-    "VanEck Associates Corporation": "0000912471",
-    "Market Vectors ETF Trust": "0001345413",
-    
-    # ProShares
-    "ProShare Advisors LLC": "0001174610",
-    "ProShares Trust": "0001174612",
-    
-    # Fidelity
-    "FMR LLC": "0000315066",
-    "Fidelity Management & Research Company": "0000315067",
-    
-    # Grayscale
-    "Grayscale Investments, LLC": "0001588489",
-    "Grayscale Bitcoin Trust": "0001588489",
-    
-    # Janus Henderson
-    "Janus Henderson Group plc": "0001691415",
-    "Janus Capital Management LLC": "0000886982",
-}
 
 
 @dataclass
@@ -92,6 +35,7 @@ class WorkflowConfig:
     max_filings_per_series: int = None  # None = no limit
     user_agent: str = "GetFundHoldings.com admin@getfundholdings.com"
     interested_etf_tickers: Optional[List[str]] = None
+    ticker_filter: Optional[str] = None  # Filter by specific ticker symbol
 
 
 class FundHoldingsWorkflow:
@@ -189,6 +133,12 @@ class FundHoldingsWorkflow:
                 series_data = filtered_series
                 logger.info(
                     f"Filtered to {len(series_data)} series with tickers: {self.config.interested_etf_tickers}"
+                )
+            
+            # Note: ticker_filter is now applied at holdings level, not series level
+            if self.config.ticker_filter:
+                logger.info(
+                    f"Will filter holdings by ticker: {self.config.ticker_filter} (applied during holdings extraction)"
                 )
 
             # Step 2: Collect N-PORT filings for all series
@@ -385,6 +335,11 @@ class FundHoldingsWorkflow:
 
                             # Get fund ticker from mapping
                             fund_ticker = series_ticker_map.get(series_id, "unknown")
+                            
+                            # Apply ticker filter at holdings level if specified
+                            if self.config.ticker_filter and fund_ticker.upper() != self.config.ticker_filter.upper():
+                                logger.debug(f"Skipping holdings for {fund_ticker} (doesn't match filter: {self.config.ticker_filter})")
+                                continue
 
                             # Add metadata columns
                             holdings_df["source_file"] = os.path.basename(xml_file)
@@ -702,31 +657,140 @@ class FundHoldingsWorkflow:
         return enriched_file
 
 
-def main():
-    """Example usage of the workflow."""
-    config = WorkflowConfig(
-        cik_list=CIK_MAP.values(),
-        enable_ticker_enrichment=True,
-        max_series_per_cik=None,
-        max_filings_per_series=1,
-        # interested_etf_tickers=["JEPI", "JEPQ", "IVV"]
-        # interested_etf_tickers=["URTH"],
-    )
+# def process_simplify_etfs():
+#     """Process ETFs specifically for Simplify Asset Management."""
+#     simplify_cik = "0001810747"
+    
+#     config = WorkflowConfig(
+#         cik_list=[simplify_cik],
+#         enable_ticker_enrichment=True,
+#         max_series_per_cik=None,
+#         max_filings_per_series=1,
+#     )
+    
+#     logger.info(f"Processing Simplify ETFs for CIK: {simplify_cik}")
+#     workflow = FundHoldingsWorkflow(config)
+#     results = workflow.run()
+    
+#     logger.info(f"Simplify ETF processing completed")
+#     logger.info(f"- Success: {results['successful_ciks']}/{results['total_ciks']}")
+#     logger.info(f"- Execution Time: {results['total_execution_time']:.2f} seconds")
+    
+#     return results
 
+
+def filter_ciks_by_issuer(issuer_pattern: str = None) -> List[str]:
+    """Filter CIKs by issuer name pattern using regex.
+    
+    Args:
+        issuer_pattern: Regex pattern to match against issuer names (case-insensitive)
+                       If None, returns all CIKs
+    
+    Returns:
+        List of CIKs matching the pattern
+    """
+    if not issuer_pattern:
+        return list(CIK_MAP.values())
+    
+    try:
+        pattern = re.compile(issuer_pattern, re.IGNORECASE)
+        matching_ciks = []
+        
+        for issuer_name, cik in CIK_MAP.items():
+            if pattern.search(issuer_name):
+                logger.info(f"Matched issuer: {issuer_name} -> CIK: {cik}")
+                matching_ciks.append(cik)
+        
+        if not matching_ciks:
+            logger.warning(f"No issuers matched pattern: {issuer_pattern}")
+            logger.info(f"Available issuers: {list(CIK_MAP.keys())}")
+        
+        return matching_ciks
+        
+    except re.error as e:
+        logger.error(f"Invalid regex pattern '{issuer_pattern}': {e}")
+        return []
+
+
+def main():
+    """Main entry point with optional issuer filtering."""
+    parser = argparse.ArgumentParser(
+        description="Process fund holdings data pipeline",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python -m fh.workflow                    # Process all issuers
+  python -m fh.workflow --issuer simplify  # Process only Simplify
+  python -m fh.workflow --issuer "vanguard|blackrock"  # Process Vanguard or BlackRock
+  python -m fh.workflow --issuer "^iShares"  # Process issuers starting with "iShares"
+  python -m fh.workflow --ticker SPY       # Process only SPY ETF
+  python -m fh.workflow --ticker QQQ --issuer invesco  # Process QQQ from Invesco
+        """
+    )
+    
+    parser.add_argument(
+        "--issuer", "-i",
+        type=str,
+        help="Regex pattern to filter issuers (case-insensitive)"
+    )
+    
+    parser.add_argument(
+        "--max-series",
+        type=int,
+        help="Maximum series per CIK to process"
+    )
+    
+    parser.add_argument(
+        "--max-filings", 
+        type=int,
+        default=1,
+        help="Maximum filings per series to process (default: 1)"
+    )
+    
+    parser.add_argument(
+        "--ticker", "-t",
+        type=str,
+        help="Filter by specific ticker symbol (e.g., SPY, QQQ)"
+    )
+    
+    args = parser.parse_args()
+    
+    # Filter CIKs based on issuer pattern
+    filtered_ciks = filter_ciks_by_issuer(args.issuer)
+    
+    if not filtered_ciks:
+        logger.error("No CIKs to process. Exiting.")
+        return
+    
+    logger.info(f"Processing {len(filtered_ciks)} CIK(s): {filtered_ciks}")
+    
+    # Create workflow config
+    config = WorkflowConfig(
+        cik_list=filtered_ciks,
+        enable_ticker_enrichment=True,
+        max_series_per_cik=args.max_series,
+        max_filings_per_series=args.max_filings,
+        ticker_filter=args.ticker,
+    )
+    
+    # Run workflow
     workflow = FundHoldingsWorkflow(config)
     results = workflow.run()
 
-    logger.debug(f"Workflow Results:")
-    logger.debug(f"- Total CIKs: {results['total_ciks']}")
-    logger.debug(f"- Successful: {results['successful_ciks']}")
-    logger.debug(f"- Failed: {results['failed_ciks']}")
-    logger.debug(f"- Execution Time: {results['total_execution_time']:.2f} seconds")
+    # Log results
+    logger.info(f"Workflow Results:")
+    logger.info(f"- Total CIKs: {results['total_ciks']}")
+    logger.info(f"- Successful: {results['successful_ciks']}")
+    logger.info(f"- Failed: {results['failed_ciks']}")
+    logger.info(f"- Execution Time: {results['total_execution_time']:.2f} seconds")
 
     for cik, result in results["cik_results"].items():
-        logger.debug(f"\nCIK {cik}:")
-        logger.debug(f"  Success: {result.get('success', False)}")
-        logger.debug(f"  Steps: {result.get('steps_completed', [])}")
-        logger.debug(f"  Files: {len(result.get('output_files', []))}")
+        logger.info(f"\nCIK {cik}:")
+        logger.info(f"  Success: {result.get('success', False)}")
+        logger.info(f"  Steps: {result.get('steps_completed', [])}")
+        logger.info(f"  Files: {len(result.get('output_files', []))}")
+    
+    return results
 
 
 if __name__ == "__main__":

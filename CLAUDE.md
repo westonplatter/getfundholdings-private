@@ -42,9 +42,28 @@ results = workflow.run()  # Execute complete pipeline
 ```
 
 **Entry Points:**
-- `uv run python -m fh.workflow` - CLI execution
+- `uv run python -m fh.workflow` - CLI execution with issuer filtering
 - `uv run python main.py` - Legacy interface
 - Direct import for programmatic use
+
+**CLI Usage with Issuer Filtering:**
+```bash
+# Process all issuers
+uv run python -m fh.workflow
+
+# Process specific issuer (case-insensitive regex)
+uv run python -m fh.workflow --issuer simplify
+uv run python -m fh.workflow --issuer blackrock
+
+# Process multiple issuers using regex
+uv run python -m fh.workflow --issuer "vanguard|blackrock"
+
+# Process issuers starting with pattern
+uv run python -m fh.workflow --issuer "^iShares"
+
+# Control processing limits
+uv run python -m fh.workflow --issuer simplify --max-series 5 --max-filings 2
+```
 
 ## R2 Upload & Multi-Environment Support
 
@@ -104,9 +123,14 @@ The enrichment process uses a **modular design pattern** in `fh/workflow.py` for
 ## Python Development Commands
 
 - Run Python commands: `uv run python <script>`
-- Execute workflow: `uv run python -m fh.workflow`
+- Execute workflow: `uv run python -m fh.workflow [--issuer PATTERN] [--max-series N] [--max-filings N]`
 - Debug ISIN lookups: `uv run python debug_isin_lookup.py`
 - Project uses pyproject.toml for dependency management
+
+**Workflow CLI Options:**
+- `--issuer, -i`: Regex pattern to filter fund companies (case-insensitive)
+- `--max-series`: Maximum series per CIK to process
+- `--max-filings`: Maximum filings per series to process (default: 1)
 
 ## SEC EDGAR API Requirements
 
