@@ -603,8 +603,8 @@ class OpenFIGIClient:
 
         # Get unique CUSIPs to avoid duplicate API calls, filtering out NaN values
         unique_cusips = df[cusip_column].dropna().unique()
-        # Filter out non-string values that might be floats
-        unique_cusips = [cusip for cusip in unique_cusips if isinstance(cusip, str)]
+        # Filter out non-string values that might be floats and invalid CUSIPs
+        unique_cusips = [cusip for cusip in unique_cusips if isinstance(cusip, str) and cusip != "000000000"]
         logger.info(f"Found {len(unique_cusips)} unique CUSIPs")
 
         # Get ticker mappings for unique CUSIPs
