@@ -616,7 +616,7 @@ class FundHoldingsWorkflow:
         enriched_df["enrichment_notes"] = ""
 
         # Add notes for missing identifiers
-        missing_cusip = enriched_df["cusip"].isna() | (enriched_df["cusip"] == "")
+        missing_cusip = enriched_df["cusip"].isna() | (enriched_df["cusip"] == "") | (enriched_df["cusip"] == "000000000")
         missing_isin = enriched_df["isin"].isna() | (enriched_df["isin"] == "")
         missing_ticker = enriched_df["ticker"].isna() | (enriched_df["ticker"] == "")
 

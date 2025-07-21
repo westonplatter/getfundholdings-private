@@ -344,7 +344,7 @@ class OpenFIGIClient:
         Returns:
             Ticker symbol if found, None otherwise
         """
-        if not cusip or not isinstance(cusip, str) or len(cusip) != 9:
+        if not cusip or not isinstance(cusip, str) or len(cusip) != 9 or cusip == "000000000":
             logger.warning(f"Invalid CUSIP format: {cusip} (type: {type(cusip)})")
             return None
 
