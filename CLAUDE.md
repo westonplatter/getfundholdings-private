@@ -132,6 +132,28 @@ The enrichment process uses a **modular design pattern** in `fh/workflow.py` for
 - `--max-series`: Maximum series per CIK to process
 - `--max-filings`: Maximum filings per series to process (default: 1)
 
+## Database Migrations
+
+The project uses Alembic for PostgreSQL database migrations with Supabase:
+
+**Run migrations:**
+```bash
+# Development environment
+ENVIRONMENT=dev uv run python -m alembic upgrade head
+
+# Production environment  
+ENVIRONMENT=prod uv run python -m alembic upgrade head
+```
+
+**Check migration status:**
+```bash
+# Current migration status
+ENVIRONMENT=prod uv run python -m alembic current
+
+# View pending migrations
+ENVIRONMENT=prod uv run python -m alembic heads
+```
+
 ## SEC EDGAR API Requirements
 
 **CRITICAL COMPLIANCE REQUIREMENTS** - Non-compliance results in immediate IP blocking:

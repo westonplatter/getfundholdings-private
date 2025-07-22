@@ -7,15 +7,22 @@ from dotenv import load_dotenv
 
 from alembic import context
 
-# Load environment variables
-load_dotenv()
+# Load environment variables with support for environment-specific files
+environment = os.getenv("ENVIRONMENT", "")
+if environment in ["dev", "prod"]:
+    env_file = f".env.{environment}"
+    if os.path.exists(env_file):
+        load_dotenv(env_file)
+else:
+    load_dotenv()
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
 
 # Set the sqlalchemy.url from environment variable if available
-database_url = os.getenv("DATABASE_URL")
+# Priority: SUPABASE_DATABASE_URL > DATABASE_URL
+database_url = os.getenv("SUPABASE_DATABASE_URL") or os.getenv("DATABASE_URL")
 if database_url:
     config.set_main_option("sqlalchemy.url", database_url)
 
