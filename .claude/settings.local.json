@@ -15,7 +15,8 @@
       "WebFetch(domain:www.sec.gov)",
       "Bash(find:*)",
       "Bash(true)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(ENVIRONMENT=dev uv run alembic revision -m \"fix_series_id_column_length\")"
     ],
     "deny": []
   }

@@ -5,22 +5,23 @@ Revises: dbd466da6c8b
 Create Date: 2025-07-21 22:22:40.312719
 
 """
+
 from typing import Sequence, Union
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = 'f46c34161b44'
-down_revision: Union[str, Sequence[str], None] = 'dbd466da6c8b'
+revision: str = "f46c34161b44"
+down_revision: Union[str, Sequence[str], None] = "dbd466da6c8b"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
     """Populate fund_providers and fund_issuers tables with data from constants.py CIK_MAP."""
-    
+
     # Provider-to-CIK mapping from fh/constants.py - grouped by fund provider
     provider_data = {
         "Vanguard": [
@@ -103,42 +104,43 @@ def upgrade() -> None:
             ("Collaborative Investment Series Trust", "0001719812"),
         ],
     }
-    
+
     # Insert data using raw SQL to ensure consistent behavior
     connection = op.get_bind()
-    
+
     for provider_name, issuers in provider_data.items():
         # First, insert or get provider
         provider_result = connection.execute(
-            sa.text("""
+            sa.text(
+                """
                 INSERT INTO fund_providers (provider_name, display_name, is_active, created_at, updated_at)
                 VALUES (:provider_name, :provider_name, :is_active, NOW(), NOW())
                 ON CONFLICT (provider_name) DO UPDATE SET updated_at = NOW()
                 RETURNING id
-            """),
-            {
-                "provider_name": provider_name,
-                "is_active": True
-            }
+            """
+            ),
+            {"provider_name": provider_name, "is_active": True},
         )
-        
+
         # Get the provider_id from the result
         provider_id = provider_result.fetchone()[0]
-        
+
         # Insert issuers for this provider
         for company_name, cik in issuers:
             connection.execute(
-                sa.text("""
+                sa.text(
+                    """
                     INSERT INTO fund_issuers (provider_id, company_name, cik, is_active, created_at, updated_at)
                     VALUES (:provider_id, :company_name, :cik, :is_active, NOW(), NOW())
                     ON CONFLICT (cik) DO NOTHING
-                """),
+                """
+                ),
                 {
                     "provider_id": provider_id,
                     "company_name": company_name,
                     "cik": cik,
-                    "is_active": True
-                }
+                    "is_active": True,
+                },
             )
 
 

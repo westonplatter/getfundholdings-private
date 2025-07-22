@@ -34,6 +34,7 @@ lint:
     - linters: [ALL]
       paths:
         - CLAUDE.md
+        - alembic/**
 
 runtimes:
   enabled:
