@@ -8,14 +8,14 @@ instead of constants.py, enabling dynamic fund management through the database.
 
 import os
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, date
 from typing import List, Optional, Tuple
 
 from dotenv import load_dotenv
 from loguru import logger
 from sqlmodel import Session, select
 
-from fh.db_models import DatabaseManager, FundDataSCDService, FundIssuer, FundProvider
+from fh.db_models import DatabaseManager, FundDataSCDService, SECReportService, FundIssuer, FundProvider
 from fh.sec_client import SECHTTPClient
 
 
@@ -31,6 +31,15 @@ class WorkflowPostgresConfig:
     user_agent: str = "GetFundHoldings.com admin@getfundholdings.com"
     interested_etf_tickers: Optional[List[str]] = None
     ticker_filter: Optional[str] = None  # Filter by specific ticker symbol
+    
+    # SEC filing processing options
+    enable_filing_discovery: bool = True  # Enable Stage 2: Series -> Filing discovery
+    target_form_types: List[str] = None  # Form types to discover (default: ["NPORT-P"])
+    
+    def __post_init__(self):
+        """Set default form types if not provided."""
+        if self.target_form_types is None:
+            self.target_form_types = ["NPORT-P"]
 
 
 def get_database_url_from_env() -> str:
@@ -204,6 +213,7 @@ class FundHoldingsWorkflowPostgres:
         self.db_manager = DatabaseManager(database_url)
         self.fund_service = FundDataService(self.db_manager)
         self.scd_service = FundDataSCDService(self.db_manager)
+        self.sec_report_service = SECReportService(self.db_manager)
 
         # Initialize SEC client
         self.sec_client = SECHTTPClient(user_agent=config.user_agent)
@@ -241,6 +251,133 @@ class FundHoldingsWorkflowPostgres:
 
         for provider, count in sorted(summary["provider_counts"].items()):
             logger.info(f"  {provider}: {count} CIKs")
+
+    def discover_series_filings(self, series_id: str) -> int:
+        """
+        Discover and save SEC filings for a specific series (Stage 2 of pipeline).
+
+        Args:
+            series_id: Series ID (e.g., S000004310)
+
+        Returns:
+            Number of filings discovered and saved
+        """
+        filings_saved = 0
+
+        for form_type in self.config.target_form_types:
+            try:
+                logger.info(f"  └─ Discovering {form_type} filings for series {series_id}")
+                
+                # Fetch filings from SEC API
+                filings_data = self.sec_client.fetch_series_filings(series_id, form_type)
+                
+                if not filings_data:
+                    logger.info(f"    │ No {form_type} filings found for series {series_id}")
+                    continue
+
+                # Filter out error entries
+                valid_filings = [f for f in filings_data if not f.get("error")]
+                if not valid_filings:
+                    logger.warning(f"    │ All {form_type} filings for series {series_id} had errors")
+                    continue
+
+                logger.info(f"    │ Found {len(valid_filings)} valid {form_type} filings")
+
+                # Save filings to database
+                for filing_data in valid_filings:
+                    accession_number = filing_data.get("accession_number")
+                    if not accession_number:
+                        logger.warning(f"    │ Skipping filing without accession number: {filing_data}")
+                        continue
+
+                    # Parse dates
+                    filing_date = self._parse_date(filing_data.get("filing_date"))
+                    report_date = self._parse_date(filing_data.get("report_date"))
+
+                    # Create report metadata
+                    report_metadata = {
+                        "raw_data": filing_data.get("raw_data", []),
+                        "parse_method": filing_data.get("parse_method", "structured"),
+                        "link_text": filing_data.get("link_text"),
+                    }
+
+                    # Save to database
+                    report = self.sec_report_service.upsert_report(
+                        series_id=series_id,
+                        accession_number=accession_number,
+                        form_type=form_type,
+                        filing_date=filing_date,
+                        report_date=report_date,
+                        report_metadata=report_metadata,
+                        raw_data=filing_data,
+                    )
+
+                    if report:
+                        filings_saved += 1
+                        logger.debug(f"      └─ Saved {form_type} filing {accession_number}")
+                    else:
+                        logger.warning(f"      └─ Failed to save {form_type} filing {accession_number}")
+
+                # Apply filing limit if configured
+                if (self.config.max_filings_per_series and 
+                    filings_saved >= self.config.max_filings_per_series):
+                    logger.info(f"    │ Reached max filings limit ({self.config.max_filings_per_series})")
+                    break
+
+            except Exception as e:
+                logger.error(f"    │ Failed to discover {form_type} filings for series {series_id}: {e}")
+
+        return filings_saved
+
+    def _parse_date(self, date_str: Optional[str]) -> Optional[date]:
+        """
+        Parse date string from SEC filing data.
+
+        Args:
+            date_str: Date string in format "YYYY-MM-DD"
+
+        Returns:
+            Parsed date or None if invalid
+        """
+        if not date_str or not isinstance(date_str, str):
+            return None
+
+        try:
+            # Handle common SEC date formats
+            if len(date_str) == 10 and "-" in date_str:
+                parts = date_str.split("-")
+                if len(parts) == 3:
+                    year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
+                    return date(year, month, day)
+        except (ValueError, IndexError):
+            logger.debug(f"Could not parse date: '{date_str}'")
+
+        return None
+
+    def print_sec_reports_summary(self):
+        """Print summary of SEC reports in the database."""
+        stats = self.sec_report_service.get_reports_stats()
+
+        logger.info("=== SEC Reports Summary ===")
+        logger.info(f"Total Reports: {stats['total_reports']}")
+        logger.info("")
+
+        if stats["by_form_type"]:
+            logger.info("Reports by Form Type:")
+            for form_type, count in sorted(stats["by_form_type"].items()):
+                logger.info(f"  {form_type}: {count} reports")
+            logger.info("")
+
+        if stats["by_download_status"]:
+            logger.info("Reports by Download Status:")
+            for status, count in sorted(stats["by_download_status"].items()):
+                logger.info(f"  {status}: {count} reports")
+            logger.info("")
+
+        if stats["by_processing_status"]:
+            logger.info("Reports by Processing Status:")
+            for status, count in sorted(stats["by_processing_status"].items()):
+                logger.info(f"  {status}: {count} reports")
 
     def run_basic_iteration(self):
         """
@@ -328,6 +465,28 @@ class FundHoldingsWorkflowPostgres:
                                 f"    │   Skipped invalid classes: {stats['classes_skipped_invalid']}"
                             )
 
+                    # Stage 2: Discover SEC filings for each series (if enabled)
+                    total_filings_found = 0
+                    if self.config.enable_filing_discovery and valid_series:
+                        logger.info(f"  └─ Stage 2: Discovering SEC filings for {len(valid_series)} series")
+                        
+                        for series in valid_series:
+                            series_id = series.get("series_id")
+                            if not series_id:
+                                continue
+                            
+                            filings_count = self.discover_series_filings(series_id)
+                            total_filings_found += filings_count
+                            
+                            if filings_count > 0:
+                                logger.info(f"    │ Series {series_id}: {filings_count} filings discovered")
+                            
+                            # Apply series limit if configured
+                            if (self.config.max_series_per_cik and 
+                                len([s for s in valid_series if s.get("series_id") == series_id]) >= self.config.max_series_per_cik):
+                                logger.info(f"    │ Reached max series limit ({self.config.max_series_per_cik})")
+                                break
+
                     # Log series details
                     for series in valid_series:
                         series_id = series.get("series_id", "Unknown")
@@ -349,6 +508,10 @@ class FundHoldingsWorkflowPostgres:
                                     f"      └─ ... and {len(classes) - 3} more classes"
                                 )
                                 break
+                    
+                    # Log filing discovery results
+                    if self.config.enable_filing_discovery:
+                        logger.info(f"    │ Total SEC filings discovered: {total_filings_found}")
 
                     successful_ciks += 1
                 else:
@@ -367,6 +530,11 @@ class FundHoldingsWorkflowPostgres:
         logger.info(f"Successful: {successful_ciks}")
         logger.info(f"Failed: {failed_ciks}")
         logger.info(f"Total series found: {total_series_found}")
+        
+        # SEC Reports summary (if filing discovery was enabled)
+        if self.config.enable_filing_discovery:
+            logger.info("")
+            self.print_sec_reports_summary()
 
         # Database statistics
         try:
@@ -401,12 +569,34 @@ def main():
         action="store_true",
         help="Show provider summary only, don't process CIKs",
     )
+    parser.add_argument(
+        "--disable-filing-discovery",
+        action="store_true",
+        help="Skip Stage 2: SEC filing discovery",
+    )
+    parser.add_argument(
+        "--form-types",
+        type=str,
+        default="NPORT-P",
+        help="Comma-separated list of SEC form types to discover (default: NPORT-P)",
+    )
+    parser.add_argument(
+        "--max-filings",
+        type=int,
+        help="Maximum number of filings to discover per series",
+    )
 
     args = parser.parse_args()
 
+    # Parse form types
+    form_types = [ft.strip() for ft in args.form_types.split(",") if ft.strip()]
+    
     # Create config
     config = WorkflowPostgresConfig(
         provider_filter=args.provider,
+        enable_filing_discovery=not args.disable_filing_discovery,
+        target_form_types=form_types,
+        max_filings_per_series=args.max_filings,
     )
 
     # Create and run workflow

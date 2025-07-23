@@ -5,13 +5,14 @@ Database models and services for fund holdings data pipeline.
 This module provides SQLModel-based database models and services for:
 - Fund provider and issuer management (CIK hierarchy)
 - Security mappings cache (CUSIP/ISIN to ticker mappings from OpenFIGI API)
+- SEC reports tracking (N-PORT, 13F, N-CSR, etc.)
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import List, Optional
 
 from loguru import logger
-from sqlmodel import Field, Session, SQLModel, create_engine, select
+from sqlmodel import Field, Session, SQLModel, create_engine, select, Column, JSON
 
 
 # Fund Provider and Issuer Models
@@ -90,6 +91,38 @@ class FundClass(SQLModel, table=True):
     source: str = Field(max_length=50, default="sec_api")
     last_verified_date: datetime = Field(default_factory=datetime.now)
     change_reason: Optional[str] = Field(max_length=100, default=None)
+
+
+# SEC Reports Models
+class SECReport(SQLModel, table=True):
+    """Database model for SEC reports filed by funds (N-PORT, 13F, N-CSR, etc.)."""
+
+    __tablename__ = "sec_reports"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    series_id: str = Field(max_length=15, index=True)  # References fund_series.series_id (no FK due to Type 6 SCD)
+    accession_number: str = Field(max_length=50, index=True)  # SEC accession number
+
+    # Report identification
+    form_type: str = Field(max_length=20, index=True)  # NPORT-P, 13F, N-CSR, etc.
+    filing_date: Optional[date] = Field(default=None, index=True)  # Date filed with SEC
+    report_date: Optional[date] = Field(default=None, index=True)  # Period end date
+    public_date: Optional[date] = Field(default=None)  # When data becomes public (N-PORT has 60-day delay)
+
+    # Processing status tracking
+    download_status: str = Field(max_length=20, default="pending", index=True)  # pending, downloaded, failed
+    processing_status: str = Field(max_length=20, default="pending", index=True)  # pending, processed, failed
+
+    # Flexible storage for different form types
+    file_paths: Optional[dict] = Field(default=None, sa_column=Column(JSON))  # {"xml": "path", "csv": "path", "txt": "path"}
+    report_metadata: Optional[dict] = Field(default=None, sa_column=Column(JSON))  # Form-specific metadata
+    raw_data: Optional[dict] = Field(default=None, sa_column=Column(JSON))  # Original parsed SEC data
+
+    # Standard tracking fields
+    created_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=datetime.now)
+    last_processed_at: Optional[datetime] = Field(default=None)
+    error_message: Optional[str] = Field(default=None)
 
 
 # Security Mapping Models
@@ -792,3 +825,283 @@ class SecurityMappingService:
         except Exception as e:
             logger.warning(f"Failed to clear cache: {e}")
             return 0
+
+
+class SECReportService:
+    """Service for CRUD operations on SEC reports."""
+
+    def __init__(self, db_manager: DatabaseManager):
+        """Initialize service with database manager."""
+        self.db_manager = db_manager
+
+    def upsert_report(
+        self,
+        series_id: str,
+        accession_number: str,
+        form_type: str,
+        filing_date: Optional[date] = None,
+        report_date: Optional[date] = None,
+        public_date: Optional[date] = None,
+        report_metadata: Optional[dict] = None,
+        raw_data: Optional[dict] = None,
+    ) -> Optional[SECReport]:
+        """
+        Create or update an SEC report record.
+
+        Args:
+            series_id: Series ID (e.g., S000004310)
+            accession_number: SEC accession number
+            form_type: Form type (NPORT-P, 13F, N-CSR, etc.)
+            filing_date: Date filed with SEC
+            report_date: Report period end date
+            public_date: Date data becomes public
+            report_metadata: Form-specific metadata
+            raw_data: Original parsed SEC data
+
+        Returns:
+            SECReport if successful, None if failed
+        """
+        try:
+            with self.db_manager.get_session() as session:
+                # Check if report already exists
+                existing = session.exec(
+                    select(SECReport).where(
+                        SECReport.series_id == series_id,
+                        SECReport.accession_number == accession_number,
+                        SECReport.form_type == form_type,
+                    )
+                ).first()
+
+                current_time = datetime.now()
+
+                if existing:
+                    # Update existing report
+                    existing.filing_date = filing_date or existing.filing_date
+                    existing.report_date = report_date or existing.report_date
+                    existing.public_date = public_date or existing.public_date
+                    existing.report_metadata = report_metadata or existing.report_metadata
+                    existing.raw_data = raw_data or existing.raw_data
+                    existing.updated_at = current_time
+                    session.add(existing)
+                    report = existing
+                else:
+                    # Create new report
+                    report = SECReport(
+                        series_id=series_id,
+                        accession_number=accession_number,
+                        form_type=form_type,
+                        filing_date=filing_date,
+                        report_date=report_date,
+                        public_date=public_date,
+                        report_metadata=report_metadata or {},
+                        raw_data=raw_data or {},
+                        created_at=current_time,
+                        updated_at=current_time,
+                    )
+                    session.add(report)
+
+                session.commit()
+                session.refresh(report)
+                return report
+
+        except Exception as e:
+            logger.error(f"Failed to upsert SEC report {form_type} {accession_number}: {e}")
+            return None
+
+    def get_reports_by_series(
+        self, series_id: str, form_type: Optional[str] = None
+    ) -> List[SECReport]:
+        """
+        Get all reports for a series, optionally filtered by form type.
+
+        Args:
+            series_id: Series ID to search for
+            form_type: Optional form type filter
+
+        Returns:
+            List of SECReport objects
+        """
+        try:
+            with self.db_manager.get_session() as session:
+                statement = select(SECReport).where(SECReport.series_id == series_id)
+                
+                if form_type:
+                    statement = statement.where(SECReport.form_type == form_type)
+                
+                statement = statement.order_by(SECReport.report_date.desc())
+                
+                return list(session.exec(statement).all())
+        except Exception as e:
+            logger.error(f"Failed to get reports for series {series_id}: {e}")
+            return []
+
+    def get_pending_downloads(self, form_type: Optional[str] = None) -> List[SECReport]:
+        """
+        Get reports that need to be downloaded.
+
+        Args:
+            form_type: Optional form type filter
+
+        Returns:
+            List of SECReport objects with pending download status
+        """
+        try:
+            with self.db_manager.get_session() as session:
+                statement = select(SECReport).where(
+                    SECReport.download_status == "pending"
+                )
+                
+                if form_type:
+                    statement = statement.where(SECReport.form_type == form_type)
+                
+                statement = statement.order_by(SECReport.filing_date.desc())
+                
+                return list(session.exec(statement).all())
+        except Exception as e:
+            logger.error(f"Failed to get pending downloads: {e}")
+            return []
+
+    def update_download_status(
+        self,
+        report_id: int,
+        status: str,
+        file_paths: Optional[dict] = None,
+        error_message: Optional[str] = None,
+    ) -> bool:
+        """
+        Update download status for a report.
+
+        Args:
+            report_id: Report ID
+            status: New status (pending, downloaded, failed)
+            file_paths: Optional file paths dictionary
+            error_message: Optional error message
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            with self.db_manager.get_session() as session:
+                report = session.get(SECReport, report_id)
+                if report:
+                    report.download_status = status
+                    report.updated_at = datetime.now()
+                    
+                    if file_paths:
+                        report.file_paths = file_paths
+                    
+                    if error_message:
+                        report.error_message = error_message
+                    
+                    session.add(report)
+                    session.commit()
+                    return True
+                return False
+        except Exception as e:
+            logger.error(f"Failed to update download status for report {report_id}: {e}")
+            return False
+
+    def update_processing_status(
+        self,
+        report_id: int,
+        status: str,
+        error_message: Optional[str] = None,
+    ) -> bool:
+        """
+        Update processing status for a report.
+
+        Args:
+            report_id: Report ID
+            status: New status (pending, processed, failed)
+            error_message: Optional error message
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            with self.db_manager.get_session() as session:
+                report = session.get(SECReport, report_id)
+                if report:
+                    report.processing_status = status
+                    report.updated_at = datetime.now()
+                    report.last_processed_at = datetime.now()
+                    
+                    if error_message:
+                        report.error_message = error_message
+                    
+                    session.add(report)
+                    session.commit()
+                    return True
+                return False
+        except Exception as e:
+            logger.error(f"Failed to update processing status for report {report_id}: {e}")
+            return False
+
+    def get_reports_stats(self) -> dict:
+        """
+        Get statistics about SEC reports in the database.
+
+        Returns:
+            Dictionary with report statistics
+        """
+        try:
+            with self.db_manager.get_session() as session:
+                # Total reports by form type
+                all_reports = list(session.exec(select(SECReport)).all())
+                
+                stats = {
+                    "total_reports": len(all_reports),
+                    "by_form_type": {},
+                    "by_download_status": {},
+                    "by_processing_status": {},
+                }
+                
+                for report in all_reports:
+                    # Count by form type
+                    stats["by_form_type"][report.form_type] = (
+                        stats["by_form_type"].get(report.form_type, 0) + 1
+                    )
+                    
+                    # Count by download status
+                    stats["by_download_status"][report.download_status] = (
+                        stats["by_download_status"].get(report.download_status, 0) + 1
+                    )
+                    
+                    # Count by processing status
+                    stats["by_processing_status"][report.processing_status] = (
+                        stats["by_processing_status"].get(report.processing_status, 0) + 1
+                    )
+                
+                return stats
+        except Exception as e:
+            logger.error(f"Failed to get reports stats: {e}")
+            return {"total_reports": 0, "by_form_type": {}, "by_download_status": {}, "by_processing_status": {}}
+
+    def get_latest_report_by_form(
+        self, series_id: str, form_type: str
+    ) -> Optional[SECReport]:
+        """
+        Get the latest report for a series and form type.
+
+        Args:
+            series_id: Series ID
+            form_type: Form type (NPORT-P, 13F, etc.)
+
+        Returns:
+            Latest SECReport or None if not found
+        """
+        try:
+            with self.db_manager.get_session() as session:
+                statement = (
+                    select(SECReport)
+                    .where(
+                        SECReport.series_id == series_id,
+                        SECReport.form_type == form_type,
+                    )
+                    .order_by(SECReport.report_date.desc())
+                )
+                
+                return session.exec(statement).first()
+        except Exception as e:
+            logger.error(f"Failed to get latest report for {series_id} {form_type}: {e}")
+            return None
