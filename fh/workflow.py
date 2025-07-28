@@ -15,10 +15,10 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
-from dotenv import load_dotenv
 from loguru import logger
 from tqdm import tqdm
 
+from fh.config_utils import load_environment_config, get_openfigi_api_key
 from fh.constants import CIK_MAP
 from fh.openfigi_client import OpenFIGIClient
 from fh.sec_client import SECHTTPClient
@@ -50,12 +50,12 @@ class FundHoldingsWorkflow:
         self.config = config
         self.sec_client = SECHTTPClient(user_agent=config.user_agent)
         
-        # Load environment variables
-        load_dotenv(".env.prod")
+        # Load environment configuration
+        load_environment_config("prod")
         
         # Initialize OpenFIGI client with API key from environment
         if config.enable_ticker_enrichment:
-            api_key = os.getenv("OPENFIGI_API_KEY")
+            api_key = get_openfigi_api_key()
             self.openfigi_client = OpenFIGIClient(api_key=api_key)
         else:
             self.openfigi_client = None

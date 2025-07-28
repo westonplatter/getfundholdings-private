@@ -1,7 +1,7 @@
 import time
 import requests
 from bs4 import BeautifulSoup
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from urllib.parse import urljoin, urlencode
 import random
 import json
@@ -907,13 +907,14 @@ class SECHTTPClient:
         logger.debug(f"No accession number found in cell texts: {cell_texts}")
         return None
     
-    def build_nport_url(self, cik: str, accession_number: str) -> str:
+    def build_nport_url(self, cik: str, accession_number: str, filename: str = "primary_doc.xml") -> str:
         """
         Build N-PORT XML download URL from CIK and accession number.
         
         Args:
             cik: Company CIK number (e.g., "1100663")
             accession_number: e.g., "0001752724-25-119791"
+            filename: XML filename (default: "primary_doc.xml")
         
         Returns:
             Complete URL to N-PORT XML file
@@ -925,9 +926,63 @@ class SECHTTPClient:
         directory = accession_number.replace('-', '')
         
         # Build URL
-        url = f"https://www.sec.gov/Archives/edgar/data/{formatted_cik}/{directory}/primary_doc.xml"
+        url = f"https://www.sec.gov/Archives/edgar/data/{formatted_cik}/{directory}/{filename}"
         
         return url
+    
+    def _discover_nport_xml_filename(self, cik: str, accession_number: str) -> Optional[Tuple[str, str]]:
+        """
+        Discover the actual N-PORT XML filename and correct CIK by parsing the index page.
+        
+        Args:
+            cik: Company CIK number
+            accession_number: Accession number
+            
+        Returns:
+            Tuple of (filename, correct_cik) or None if not found
+        """
+        index_url = self.build_nport_index_url(cik, accession_number)
+        
+        try:
+            response = self._make_request(index_url)
+            if response.status_code != 200:
+                logger.debug(f"Could not fetch index page: {index_url} (status: {response.status_code})")
+                return None
+            
+            # Parse HTML to find XML files
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Look for links to XML files
+            for link in soup.find_all('a', href=True):
+                href = link.get('href')
+                if href and href.endswith('.xml'):
+                    # Check if it's likely an N-PORT XML file
+                    filename = href.split('/')[-1]  # Get just the filename
+                    if any(indicator in filename.lower() for indicator in ['nport', 'primary_doc']):
+                        # Extract CIK from the href URL: /Archives/edgar/data/{CIK}/...
+                        import re
+                        cik_match = re.search(r'/Archives/edgar/data/(\d+)/', href)
+                        discovered_cik = cik_match.group(1) if cik_match else cik
+                        logger.debug(f"Discovered N-PORT XML filename: {filename}, CIK: {discovered_cik}")
+                        return (filename, discovered_cik)
+            
+            # Fallback: look for any XML file if no N-PORT specific file found
+            for link in soup.find_all('a', href=True):
+                href = link.get('href')
+                if href and href.endswith('.xml'):
+                    filename = href.split('/')[-1]
+                    # Extract CIK from the href URL
+                    import re
+                    cik_match = re.search(r'/Archives/edgar/data/(\d+)/', href)
+                    discovered_cik = cik_match.group(1) if cik_match else cik
+                    logger.debug(f"Found XML file (fallback): {filename}, CIK: {discovered_cik}")
+                    return (filename, discovered_cik)
+                    
+        except Exception as e:
+            logger.debug(f"Error discovering XML filename: {e}")
+            
+        return None
     
     def download_nport_xml(self, cik: str, accession_number: str) -> Optional[str]:
         """
@@ -940,7 +995,18 @@ class SECHTTPClient:
         Returns:
             XML content as string or None if failed
         """
-        url = self.build_nport_url(cik, accession_number)
+        # First try to discover the actual filename and correct CIK
+        discovery_result = self._discover_nport_xml_filename(cik, accession_number)
+        if discovery_result:
+            xml_filename, discovered_cik = discovery_result
+            logger.debug(f"Using discovered filename: {xml_filename}, CIK: {discovered_cik}")
+        else:
+            # Fallback to default filename and original CIK
+            xml_filename = "primary_doc.xml"
+            discovered_cik = cik
+            logger.debug(f"Using fallback filename: {xml_filename}, original CIK: {discovered_cik}")
+        
+        url = self.build_nport_url(discovered_cik, accession_number, xml_filename)
         
         try:
             # Update headers for XML content
@@ -951,6 +1017,7 @@ class SECHTTPClient:
             response = self._make_request(url)
             
             if response.status_code == 404:
+                logger.warning(f"Resource not found: {url}")
                 logger.warning(f"N-PORT XML not found for accession {accession_number}")
                 return None
             

@@ -66,6 +66,39 @@ Maintains complete history of fund class attributes that change over time (name 
 - `change_reason` - Audit field explaining why new record was created
 - Type 6 SCD fields (same as fund_series)
 
+### sec_reports
+
+**Purpose**: Tracks SEC filing reports (N-PORT, etc.) discovered from series data with download and processing status.
+
+Manages the pipeline from filing discovery through XML download to holdings extraction. Each record represents a specific SEC filing (identified by accession number) for a particular series.
+
+**Key Fields:**
+
+- `series_id` (100 chars) - References fund_series.series_id
+- `accession_number` (50 chars) - Unique SEC filing identifier (e.g., "0001752724-25-119791")
+- `form_type` (20 chars) - SEC form type ("NPORT-P", "NPORT-EX", etc.)
+- `filing_date` / `report_date` - When filed vs. what period it covers
+- `download_status` - Enum: "pending", "downloaded", "failed"
+- `processing_status` - Enum: "pending", "processed", "failed"
+- `file_paths` - JSONB object storing paths to downloaded/processed files
+- `report_metadata` - JSONB object with parsing metadata and raw SEC data
+- `error_message` - Details when download/processing fails
+
+**Workflow States:**
+1. **Discovery**: Record created with `download_status="pending"`
+2. **Download**: XML file downloaded, `download_status="downloaded"`, file path stored
+3. **Processing**: Holdings extracted to CSV, `processing_status="processed"`
+4. **Enrichment**: Ticker symbols added via separate enrichment process
+
+**File Path Structure:**
+```json
+{
+  "xml": "data/nport_1234567890_S000123456_0001234567890_25_123456.xml",
+  "holdings_raw": "data/holdings_raw_1234567890_S000123456_20241231_20250123_143022.csv",
+  "holdings_enriched": "data/holdings_enriched_1234567890_S000123456_20241231_20250123_143155.csv"
+}
+```
+
 ## Existing Tables
 
 ### security_mappings
@@ -82,6 +115,7 @@ Prevents duplicate API calls and tracks mapping validity periods for efficient t
 4. `populate_cik_data_from_constants` - Migrated CIK data from constants.py
 5. `create_fund_series_classes_type6_scd` - Added Type 6 SCD tables for series/class tracking
 6. `fix_series_id_column_length` - Expanded series_id/class_id columns from 15 to 100 chars
+7. `create_nport_reports_table` - Added SEC filing tracking and pipeline status management
 
 ## Architecture Benefits
 
